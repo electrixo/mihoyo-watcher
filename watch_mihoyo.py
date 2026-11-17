@@ -18,6 +18,7 @@
     python watch_mihoyo.py --dry-run       # 只打印，不推送、不写状态
     python watch_mihoyo.py --seed          # 只登记历史，不推送
     python watch_mihoyo.py --codes-only    # 只搜兑换码（前瞻窗口用），不抓资讯
+    python watch_mihoyo.py --test-push     # 只发一条测试推送，不抓取、不写状态
     python watch_mihoyo.py --page-size 20
 """
 
@@ -267,6 +268,7 @@ def main(argv):
     dry = "--dry-run" in argv
     force_seed = "--seed" in argv
     codes_only = "--codes-only" in argv
+    test_push = "--test-push" in argv
     page_size = PAGE_SIZE
     if "--page-size" in argv:
         try:
@@ -274,6 +276,21 @@ def main(argv):
         except (IndexError, ValueError):
             log("[WARN] --page-size 需要整数，使用默认值")
     today = time.strftime("%Y-%m-%d")
+
+    if test_push:
+        body = (
+            f"这是一条测试推送。\n\n"
+            f"时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"收到说明 PUSHPLUS_TOKEN 与网络都正常。"
+        )
+        log("发送测试推送……")
+        result = push("米游社监控测试消息", body)
+        if result is True:
+            log("测试推送成功")
+            return 0
+        if result is None:
+            log("未配置 PUSHPLUS_TOKEN，无法测试推送")
+        return 1
 
     if codes_only:
         items, failures, total = [], 0, 0
@@ -290,10 +307,16 @@ def main(argv):
     new_hits = select_new_codes(code_hits, seen)
 
     if first_run or force_seed:
+        if dry:
+            # 首次运行也要能看到“将要推送什么”，否则 dry-run 无从排查
+            if push_items or new_hits:
+                print(render(push_items, new_hits, today))
+            log(f"dry-run 首次运行预览：{len(new_items)} 条内容 / {len(new_hits)} 个兑换码，"
+                f"不推送、不写状态")
+            return 0
         mark_seen(seen, new_items, new_hits, today)
-        if not dry:
-            prune_seen(seen)
-            save_seen(seen)
+        prune_seen(seen)
+        save_seen(seen)
         log(f"首次/强制登记：记录 {len(new_items)} 条内容 / {len(new_hits)} 个兑换码，不推送")
         return 0
 
