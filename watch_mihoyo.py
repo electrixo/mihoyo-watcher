@@ -17,6 +17,7 @@
     python watch_mihoyo.py                 # 拉一轮，有新内容就打印/推送
     python watch_mihoyo.py --dry-run       # 只打印，不推送、不写状态
     python watch_mihoyo.py --seed          # 只登记历史，不推送
+    python watch_mihoyo.py --codes-only    # 只搜兑换码（前瞻窗口用），不抓资讯
     python watch_mihoyo.py --page-size 20
 """
 
@@ -265,6 +266,7 @@ def push(title, body):
 def main(argv):
     dry = "--dry-run" in argv
     force_seed = "--seed" in argv
+    codes_only = "--codes-only" in argv
     page_size = PAGE_SIZE
     if "--page-size" in argv:
         try:
@@ -273,7 +275,10 @@ def main(argv):
             log("[WARN] --page-size 需要整数，使用默认值")
     today = time.strftime("%Y-%m-%d")
 
-    items, failures, total = collect(page_size)
+    if codes_only:
+        items, failures, total = [], 0, 0
+    else:
+        items, failures, total = collect(page_size)
     code_hits, code_failures, code_total = mihoyo_codes.collect_codes()
     failures += code_failures
     total += code_total
@@ -293,7 +298,7 @@ def main(argv):
         return 0
 
     if not new_items and not new_hits:
-        log("没有新的福利内容或兑换码")
+        log("没有新的兑换码" if codes_only else "没有新的福利内容或兑换码")
         return 0 if failures < total else 1
 
     if not push_items and not new_hits:
@@ -306,7 +311,10 @@ def main(argv):
         return 0 if failures < total else 1
 
     body = render(push_items, new_hits, today)
-    title = f"米游社福利日报 {today}（{len(new_hits)} 码 / {len(push_items)} 条福利）"
+    if codes_only:
+        title = f"米游社新兑换码 {today}（{len(new_hits)}）"
+    else:
+        title = f"米游社福利日报 {today}（{len(new_hits)} 码 / {len(push_items)} 条福利）"
     print(body)
 
     if dry:
