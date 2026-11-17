@@ -219,6 +219,30 @@ class MainTests(unittest.TestCase):
         self.assertFalse(first)
         self.assertIn("1001", seen["posts"])
 
+    def test_dry_run_first_time_prints_preview_without_state(self):
+        code = self.run_main([item("1001")], argv=["--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.pushed, [])
+        self.assertIn("福利活动", self.out.getvalue())
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_test_push_sends_only_one_message_without_state(self):
+        with mock.patch.object(w, "collect", side_effect=AssertionError("不应抓取")), \
+                mock.patch.object(w.mihoyo_codes, "collect_codes",
+                                  side_effect=AssertionError("不应抓取")), \
+                redirect_stdout(self.out):
+            code = w.main(["--test-push"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 1)
+        self.assertIn("测试", self.pushed[0][0])
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_test_push_failure_returns_1(self):
+        with mock.patch.object(w, "push", lambda title, body: False), \
+                redirect_stdout(self.out):
+            code = w.main(["--test-push"])
+        self.assertEqual(code, 1)
+
     def test_new_welfare_is_pushed(self):
         self.run_main([item("1001")])
         self.out = StringIO()
