@@ -47,15 +47,7 @@
 - 本项目只使用 `schedule` 和 `workflow_dispatch` 两种触发方式，
   不使用 `pull_request_target` 或 `workflow_run`，因此 fork 提交的 PR
   不会读取到原仓库的 Secrets。
-
-### 公开仓库意味着什么
-
-- Actions 日志和 Job Summary 是公开的；代码已对 Cookie 打码，
-  但请仍然不要把自己的 token 写进任何文件或提交信息。
-- 状态文件 `seen_news.json` / `checkin_state.json` 只包含日期、post_id、
-  兑换码和计数，不包含任何凭证。
-- 定时任务只在原仓库的默认分支运行；fork 不会自动执行原仓库的 cron。
-
+  
 ### 如果你是 fork 的使用者
 
 - 请自行配置自己的 Secrets，并自行承担账号风控、封号等风险。
