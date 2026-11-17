@@ -1,0 +1,22 @@
+{
+  "retcode": 0,
+  "message": "OK",
+  "data": {
+    "list": [
+      {
+        "post": {
+          "post_id": "2001",
+          "subject": "米游币兑换中心】崩坏：星穹铁道商品即将上新！",
+          "content": "",
+          "created_at": 1794564000
+        },
+        "text_summary": "限时兑换，先到先得",
+        "news_meta": {
+          "activity_status": 1,
+          "start_at_sec": "1794564000",
+          "end_at_sec": "1798192800"
+        }
+      }
+    ]
+  }
+}

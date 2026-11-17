@@ -1,0 +1,26 @@
+{
+  "retcode": 0,
+  "message": "OK",
+  "data": {
+    "list": [
+      {
+        "post": {
+          "post_id": "1001",
+          "subject": "【福利】版本更新补给",
+          "content": "",
+          "created_at": 1794823213
+        },
+        "text_summary": "登录即可领取原石×100"
+      },
+      {
+        "post": {
+          "post_id": "1002",
+          "subject": "【2026年11月16日】账号封禁公示",
+          "content": "",
+          "created_at": 1794823000
+        },
+        "text_summary": ""
+      }
+    ]
+  }
+}

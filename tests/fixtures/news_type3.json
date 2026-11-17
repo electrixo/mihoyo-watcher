@@ -1,0 +1,26 @@
+{
+  "retcode": 0,
+  "message": "OK",
+  "data": {
+    "list": [
+      {
+        "post": {
+          "post_id": "3001",
+          "subject": "绒绒号番外剧场最终回",
+          "content": "",
+          "created_at": 1794700000
+        },
+        "text_summary": "动画短片"
+      },
+      {
+        "post": {
+          "post_id": "3002",
+          "subject": "签到活动开启",
+          "content": "",
+          "created_at": 1794701000
+        },
+        "text_summary": "连续签到 7 天领奖励"
+      }
+    ]
+  }
+}
