@@ -38,3 +38,30 @@
 - 不识别验证码、不伪造设备指纹、不使用代理池
 - 不收集他人 Cookie；签到只使用你配置在自己仓库 Secrets 里的凭证
 - 不做多账号、Web UI、数据库
+## 安全、Fork 与免责
+
+### Secrets 不会被 fork 带走
+
+- 本仓库的 `PUSHPLUS_TOKEN`、`CHECKIN_COOKIE` 只保存在原仓库的
+  Settings → Secrets 中，**fork 不会复制 Secrets**。
+- 本项目只使用 `schedule` 和 `workflow_dispatch` 两种触发方式，
+  不使用 `pull_request_target` 或 `workflow_run`，因此 fork 提交的 PR
+  不会读取到原仓库的 Secrets。
+
+### 公开仓库意味着什么
+
+- Actions 日志和 Job Summary 是公开的；代码已对 Cookie 打码，
+  但请仍然不要把自己的 token 写进任何文件或提交信息。
+- 状态文件 `seen_news.json` / `checkin_state.json` 只包含日期、post_id、
+  兑换码和计数，不包含任何凭证。
+- 定时任务只在原仓库的默认分支运行；fork 不会自动执行原仓库的 cron。
+
+### 如果你是 fork 的使用者
+
+- 请自行配置自己的 Secrets，并自行承担账号风控、封号等风险。
+- 不要把这个项目用于批量注册、多账号刷奖励或其他违反平台条款的行为。
+
+### 免责声明
+
+本项目仅用于个人学习与自用，按“现状”提供，不提供任何明示或暗示的担保。
+自动化操作可能违反平台服务条款，使用风险由使用者自行承担。
