@@ -271,6 +271,29 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(self.pushed), 1)
 
+    def test_codes_only_skips_news_and_pushes_codes(self):
+        self.run_main([item("1001")])  # 建立 seen
+        self.out = StringIO()
+        with mock.patch.object(w, "collect", side_effect=AssertionError("资讯不应被抓取")), \
+                mock.patch.object(w.mihoyo_codes, "collect_codes", return_value=([hit()], 0, 5)), \
+                redirect_stdout(self.out):
+            code = w.main(["--codes-only"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 1)
+        self.assertIn("STARRAIL9A8B7C", self.pushed[0][1])
+        self.assertIn("兑换码", self.pushed[0][0])
+
+    def test_codes_only_silent_without_hits(self):
+        self.run_main([item("1001")])
+        self.out = StringIO()
+        with mock.patch.object(w, "collect", side_effect=AssertionError("资讯不应被抓取")), \
+                mock.patch.object(w.mihoyo_codes, "collect_codes", return_value=([], 0, 5)), \
+                redirect_stdout(self.out):
+            code = w.main(["--codes-only"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.pushed, [])
+        self.assertIn("没有新的兑换码", self.out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
