@@ -12,6 +12,15 @@ on:
     - cron: "10 6 * * *"          # BJT 14:10 签到兜底
     - cron: "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 前瞻窗口
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只抓取，不推送、不写状态（排查用）"
+        type: boolean
+        default: false
+      test_push:
+        description: "只发一条测试推送，不抓取、不写状态"
+        type: boolean
+        default: false
 
 permissions:
   contents: write                 # 提交 seen_news.json / checkin_state.json
@@ -53,10 +62,16 @@ jobs:
         # pipefail：tee 不能吞掉脚本的退出码
         run: |
           set -o pipefail
-          if [ "${{ github.event.schedule }}" = "7,37 14 * * 3,5,6" ]; then
-            python watch_mihoyo.py --codes-only 2>&1 | tee watch.log
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          TEST=""
+          if [ "${{ inputs.test_push }}" = "true" ]; then TEST="--test-push"; fi
+          if [ -n "$TEST" ]; then
+            python watch_mihoyo.py --test-push 2>&1 | tee watch.log
+          elif [ "${{ github.event.schedule }}" = "7,37 14 * * 3,5,6" ]; then
+            python watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
           else
-            python watch_mihoyo.py 2>&1 | tee watch.log
+            python watch_mihoyo.py $DRY 2>&1 | tee watch.log
           fi
 
       - name: 提交状态
@@ -87,7 +102,8 @@ jobs:
     needs: watch
     # 福利 job 被跳过或失败时，签到仍照常跑
     if: |
-      always() && (
+      always() &&
+      !(github.event_name == 'workflow_dispatch' && inputs.test_push) && (
         github.event_name == 'workflow_dispatch' ||
         github.event.schedule == '10 3 * * *' ||
         github.event.schedule == '10 6 * * *'
@@ -113,7 +129,9 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: |
           set -o pipefail
-          python checkin.py 2>&1 | tee checkin.log
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          python checkin.py $DRY 2>&1 | tee checkin.log
 
       - name: 提交状态
         if: always()
