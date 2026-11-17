@@ -1,0 +1,14 @@
+# 本地配置：可能含推送 token / Cookie，绝不入库
+config.json
+cookie.json
+
+# 运行产物
+state/seen.json
+state/seen.json.tmp
+checkin_state.json.tmp
+seen_news.json.tmp
+*.log
+
+# Python
+__pycache__/
+*.pyc
