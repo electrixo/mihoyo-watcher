@@ -1,0 +1,114 @@
+name: 米游社福利与签到
+
+on:
+  schedule:
+    # UTC 01:30 = 北京 09:30，每天一次
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # 需要提交 seen_news.json / checkin_state.json
+
+concurrency:
+  group: mihoyo-watch    # 同一时刻只允许一个 workflow
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai      # 让脚本里的 time.strftime 按北京时间算「今天」
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 随机延迟 0~3 分钟，避免所有用户整点打同一接口（仅定时触发）
+      - name: 随机延迟
+        if: github.event_name == 'schedule'
+        run: sleep $((RANDOM % 180))
+
+      - name: 福利监测 + 兑换码
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        # pipefail：tee 不能吞掉脚本退出码
+        run: |
+          set -o pipefail
+          python watch_mihoyo.py 2>&1 | tee watch.log
+
+      - name: 提交状态
+        if: always()
+        run: |
+          git config user.name  "codewatch-bot"
+          git config user.email "codewatch-bot@users.noreply.github.com"
+          git add -A -- seen_news.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "chore: 更新福利监测状态 [skip ci]"
+            git push
+          fi
+
+      - name: 写入运行摘要
+        if: always()
+        run: |
+          {
+            echo "## 福利监测"
+            echo '```'
+            tail -n 60 watch.log 2>/dev/null || echo "无日志"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  checkin:
+    # 串行执行：避免两个 job 同时 commit 造成 push 冲突
+    needs: watch
+    # 即使福利监测失败，签到也照常跑
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 随机延迟
+        if: github.event_name == 'schedule'
+        run: sleep $((RANDOM % 180))
+
+      - name: 米游社签到
+        env:
+          CHECKIN_COOKIE: ${{ secrets.CHECKIN_COOKIE }}
+          CHECKIN_DEVICE_ID: ${{ secrets.CHECKIN_DEVICE_ID }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          set -o pipefail
+          python checkin.py 2>&1 | tee checkin.log
+
+      - name: 提交状态
+        if: always()
+        run: |
+          git config user.name  "codewatch-bot"
+          git config user.email "codewatch-bot@users.noreply.github.com"
+          git add -A -- checkin_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "chore: 更新签到状态 [skip ci]"
+            git push
+          fi
+
+      - name: 写入运行摘要
+        if: always()
+        run: |
+          {
+            echo "## 签到"
+            echo '```'
+            tail -n 60 checkin.log 2>/dev/null || echo "无日志"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
