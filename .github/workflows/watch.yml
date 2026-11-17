@@ -1,25 +1,37 @@
 name: 米游社福利与签到
 
+# 时区说明：GitHub cron 一律用 UTC；文件里所有注释标的是北京时间。
+# 2026-11-17 定稿：
+#   11:10 BJT 每日日报（资讯 + 兑换码）+ 签到主跑（UTC 03:10）
+#   14:10 BJT 签到兜底（UTC 06:10，签到幂等，主跑被丢弃也能补）
+#   周三/五/六 22:07、22:37 BJT 前瞻窗口（只抓码）
+
 on:
   schedule:
-    # UTC 01:30 = 北京 09:30，每天一次
-    - cron: "30 1 * * *"
+    - cron: "10 3 * * *"          # BJT 11:10 日报 + 签到主跑
+    - cron: "10 6 * * *"          # BJT 14:10 签到兜底
+    - cron: "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 前瞻窗口
   workflow_dispatch:
 
 permissions:
-  contents: write        # 需要提交 seen_news.json / checkin_state.json
+  contents: write                 # 提交 seen_news.json / checkin_state.json
 
 concurrency:
-  group: mihoyo-watch    # 同一时刻只允许一个 workflow
+  group: mihoyo-watch
   cancel-in-progress: false
 
 env:
-  TZ: Asia/Shanghai      # 让脚本里的 time.strftime 按北京时间算「今天」
+  TZ: Asia/Shanghai               # 让脚本里的「今天」按北京时间
 
 jobs:
   watch:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.schedule == '10 3 * * *' ||
+      github.event.schedule == '7,37 14 * * 3,5,6'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,18 +39,25 @@ jobs:
         with:
           python-version: "3.12"
 
-      # 随机延迟 0~3 分钟，避免所有用户整点打同一接口（仅定时触发）
+      # 只跑新项目的测试；不要上传 tests/test_config.py / test_models.py
+      - name: 单元测试
+        run: python -m unittest tests.test_watch_mihoyo tests.test_mihoyo_codes
+
       - name: 随机延迟
         if: github.event_name == 'schedule'
         run: sleep $((RANDOM % 180))
 
-      - name: 福利监测 + 兑换码
+      - name: 抓取并推送
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        # pipefail：tee 不能吞掉脚本退出码
+        # pipefail：tee 不能吞掉脚本的退出码
         run: |
           set -o pipefail
-          python watch_mihoyo.py 2>&1 | tee watch.log
+          if [ "${{ github.event.schedule }}" = "7,37 14 * * 3,5,6" ]; then
+            python watch_mihoyo.py --codes-only 2>&1 | tee watch.log
+          else
+            python watch_mihoyo.py 2>&1 | tee watch.log
+          fi
 
       - name: 提交状态
         if: always()
@@ -64,12 +83,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   checkin:
-    # 串行执行：避免两个 job 同时 commit 造成 push 冲突
+    # 串行：两个 job 都会 commit/push，避免 non-fast-forward
     needs: watch
-    # 即使福利监测失败，签到也照常跑
-    if: always()
+    # 福利 job 被跳过或失败时，签到仍照常跑
+    if: |
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.schedule == '10 3 * * *' ||
+        github.event.schedule == '10 6 * * *'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
 
