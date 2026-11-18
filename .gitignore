@@ -12,3 +12,6 @@ seen_news.json.tmp
 # Python
 __pycache__/
 *.pyc
+
+# 本机临时目录（沙箱下跑 unittest 时产生的 TMP/TEMP）
+.pytmp/

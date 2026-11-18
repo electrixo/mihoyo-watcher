@@ -50,7 +50,7 @@ jobs:
 
       # 只跑新项目的测试；不要上传 tests/test_config.py / test_models.py
       - name: 单元测试
-        run: python -m unittest tests.test_watch_mihoyo tests.test_mihoyo_codes
+        run: python -m unittest tests.test_watch_mihoyo tests.test_mihoyo_codes tests.test_workflow
 
       - name: 随机延迟
         if: github.event_name == 'schedule'
