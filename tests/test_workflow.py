@@ -1,6 +1,6 @@
 """workflow 契约测试：锁住 watch.yml 里被重复书写四次的 cron 字符串。
 
-为什么需要它 —— 三条 cron 分别出现在：
+为什么需要它 —— 每条 cron 分别出现在：
   1. on.schedule（声明调度）
   2. watch   job 的 if（决定要不要跑福利日报）
   3. checkin job 的 if（决定要不要跑签到）
@@ -20,11 +20,15 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parent.parent / ".github" / "workflows" / "watch.yml"
 )
 
-# 设计意图：当前只支持这三条调度
-DAILY_DIGEST = "10 3 * * *"          # BJT 11:10  福利日报 + 签到主跑
-CHECKIN_BACKUP = "10 6 * * *"        # BJT 14:10  签到兜底
-FORWARD_LOOK = "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37  只抓码
-EXPECTED_CRONS = {DAILY_DIGEST, CHECKIN_BACKUP, FORWARD_LOOK}
+# 设计意图：当前只支持这四条调度
+# cron 是 UTC，且「触发时刻 ≠ 执行时刻」：实测 GitHub 会延迟 7~9.5 小时才
+# 创建运行，所以下面写的是已经扣掉提前量的触发时刻，注释里的送达时间是推算值。
+DIGEST_MAIN = "45 18 * * *"          # BJT 02:45 触发 → 预计 11:10 送达  日报主跑
+DIGEST_BACKUP = "15 20 * * *"        # BJT 04:15 触发 → 预计 12:40 送达  日报兜底
+DIGEST_CRONS = {DIGEST_MAIN, DIGEST_BACKUP}
+CHECKIN_BACKUP = "10 6 * * *"        # BJT 14:10 触发 → 预计 23:30 送达  签到兜底
+FORWARD_LOOK = "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 触发 → 只抓码
+EXPECTED_CRONS = DIGEST_CRONS | {CHECKIN_BACKUP, FORWARD_LOOK}
 
 TEST_MODULES = (
     "tests.test_watch_mihoyo",
@@ -57,9 +61,10 @@ class WorkflowContractTests(unittest.TestCase):
 
     # ---- on.schedule ----------------------------------------------------
 
-    def test_schedule_declares_exactly_the_three_expected_crons(self):
+    def test_schedule_declares_exactly_the_expected_crons(self):
         crons = re.findall(r'^\s*-\s*cron:\s*"([^"]+)"', self.on, re.M)
-        self.assertEqual(len(crons), 3, f"on.schedule 应有且仅有 3 条 cron，实际 {crons}")
+        self.assertEqual(len(crons), len(EXPECTED_CRONS),
+                         f"on.schedule 应有且仅有 {len(EXPECTED_CRONS)} 条 cron，实际 {crons}")
         self.assertEqual(set(crons), EXPECTED_CRONS)
 
     def test_schedule_comparisons_have_no_typos(self):
@@ -81,17 +86,26 @@ class WorkflowContractTests(unittest.TestCase):
     def test_checkin_backup_must_not_trigger_the_digest_job(self):
         self.assertNotIn(
             CHECKIN_BACKUP, self.watch,
-            "14:10 的签到兜底不应该触发 watch job（日报只在 11:10 与前瞻窗口跑）",
+            "签到兜底不应该触发 watch job（日报只由 DIGEST_CRONS 与前瞻窗口触发）",
         )
         self.assertIn(CHECKIN_BACKUP, self.checkin)
 
     def test_watch_job_handles_digest_and_forward_look_only(self):
-        self.assertIn(DAILY_DIGEST, self.watch)
+        for cron in sorted(DIGEST_CRONS):
+            with self.subTest(cron=cron):
+                self.assertIn(cron, self.watch, f"日报调度 `{cron}` 没有触发 watch job")
         self.assertIn(FORWARD_LOOK, self.watch)
         self.assertNotIn(
             FORWARD_LOOK, self.checkin,
             "前瞻窗口只抓兑换码，不应该顺带跑签到",
         )
+
+    def test_digest_crons_also_cover_checkin(self):
+        # 签到搭日报主跑的车；签到幂等（已签返回 -5003 视为成功），多跑无害
+        for cron in sorted(DIGEST_CRONS):
+            with self.subTest(cron=cron):
+                self.assertIn(cron, self.checkin,
+                              f"日报调度 `{cron}` 应同时覆盖签到")
 
     def test_codes_only_elif_matches_the_forward_look_cron(self):
         match = re.search(

@@ -1,16 +1,25 @@
 name: 米游社福利与签到
 
 # 时区说明：GitHub cron 一律用 UTC；文件里所有注释标的是北京时间。
-# 2026-11-17 定稿：
-#   11:10 BJT 每日日报（资讯 + 兑换码）+ 签到主跑（UTC 03:10）
-#   14:10 BJT 签到兜底（UTC 06:10，签到幂等，主跑被丢弃也能补）
-#   周三/五/六 22:07、22:37 BJT 前瞻窗口（只抓码）
+#
+# 2026-11-19 改版：按实测调度偏移量反推触发时刻。
+# 实测三次 schedule 运行（11-18/11-19）：GitHub 会把定时任务延迟 7~9.5 小时才创建运行，
+# 而「创建 → 开跑」的排队延迟恒为 0。延迟发生在调度器决定「何时创建」这一步，
+# 本文件控制不了。所以把 cron 提前约 8.5 小时，让「触发时刻 + 偏移」落在目标时间：
+#   02:45 BJT 触发（UTC 18:45 前一天）→ 预计 11:10 送达  日报主跑 + 签到
+#   04:15 BJT 触发（UTC 20:15 前一天）→ 预计 12:40 送达  日报兜底
+#   14:10 BJT 触发（UTC 06:10）       → 预计 23:30 送达  签到兜底（幂等）
+#   周三/五/六 22:07、22:37 BJT 触发   → 预计次日 05:50   前瞻窗口（只抓码）
+#
+# 注意：偏移量不是常数（三个样本跨度已达 1.7 小时）。若某天偏移缩小，日报会提前到凌晨。
+# 这是赌偏移稳定，不是可靠方案；要稳只能绕开调度器，改用外部 workflow_dispatch 触发。
 
 on:
   schedule:
-    - cron: "10 3 * * *"          # BJT 11:10 日报 + 签到主跑
-    - cron: "10 6 * * *"          # BJT 14:10 签到兜底
-    - cron: "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 前瞻窗口
+    - cron: "45 18 * * *"         # BJT 02:45 触发 → 预计 11:10 送达  日报主跑 + 签到
+    - cron: "15 20 * * *"         # BJT 04:15 触发 → 预计 12:40 送达  日报兜底
+    - cron: "10 6 * * *"          # BJT 14:10 触发 → 预计 23:30 送达  签到兜底
+    - cron: "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 触发 → 只抓码
   workflow_dispatch:
     inputs:
       dry_run:
@@ -36,7 +45,8 @@ jobs:
   watch:
     if: |
       github.event_name == 'workflow_dispatch' ||
-      github.event.schedule == '10 3 * * *' ||
+      github.event.schedule == '45 18 * * *' ||
+      github.event.schedule == '15 20 * * *' ||
       github.event.schedule == '7,37 14 * * 3,5,6'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -105,7 +115,8 @@ jobs:
       always() &&
       !(github.event_name == 'workflow_dispatch' && inputs.test_push) && (
         github.event_name == 'workflow_dispatch' ||
-        github.event.schedule == '10 3 * * *' ||
+        github.event.schedule == '45 18 * * *' ||
+        github.event.schedule == '15 20 * * *' ||
         github.event.schedule == '10 6 * * *'
       )
     runs-on: ubuntu-latest
