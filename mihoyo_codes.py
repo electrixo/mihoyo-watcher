@@ -18,6 +18,8 @@ DEFAULT_KEYWORDS = (
     "兑换码", "前瞻直播兑换码", "礼包码", "兑换中心", "版本福利",
     # 前瞻码常被整理进「总结/省流版」帖，正文里码最全，单独搜这一类
     "前瞻直播内容总结", "前瞻总结", "省流", "直播总结",
+    # 「隐藏兑换码汇总」这类老版本码合集，码多为纯字母英文短语
+    "隐藏兑换码", "兑换码汇总",
 )
 DEFAULT_EXCLUDE = ("崩坏3", "未定事件簿", "崩坏学园2")
 # 搜索结果按相关度排序，前列常是 1-3 周前的帖子；7 天会漏掉大量前瞻码。
@@ -92,7 +94,23 @@ CN_LIST_RE = re.compile(
 SEQ_MARK_RE = re.compile(r"[①②③④⑤⑥⑦⑧⑨⑩]")
 CN_BLOCK = ("兑换码", "兑换", "礼包", "前瞻", "有效期", "截止", "领取", "奖励",
             "角色", "武器", "版本", "直播", "获取", "官方", "设置", "关注",
-            "点击", "游戏", "请", "账号", "入口", "方法", "步骤", "详情")
+            "点击", "游戏", "请", "账号", "入口", "方法", "步骤", "详情",
+            "制作", "攻略", "支持", "三连", "一键", "如果", "帮助", "有所")
+
+# 纯字母隐藏码（如 ifyouarereadingthis / creationnymph）：无任何形态规律，
+# 只能靠「隐藏/汇总/兑换码」强语境作闸门，再排除常见英文单词。
+HIDDEN_STRONG_CTX = ("隐藏兑换码", "兑换码汇总", "隐藏兑换")
+HIDDEN_TOKEN_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]{5,24}(?![A-Za-z])")
+ENGLISH_NOISE = frozenset("""
+if you are reading this the a an and or of to in for is are be that welcome game games
+player players guide guides new version versions event events reward rewards free get getall
+all more about how what when where support like share please follow thanks thank very good
+great best top up thisthat has have will can just now out here there them they their our
+we you your my with from at by on as it its one two three first last next click copy use
+using used make makes made open took take add addcode redeem code codes gift gifts bonus
+normal sentence real very really also still only even much many some any such into over
+after before because while which who whom whose what why how where when daily weekly event
+""".upper().split())
 
 
 @dataclass(frozen=True)
@@ -265,11 +283,31 @@ def extract_cn_list(text):
     return hits
 
 
+def extract_hidden_ascii(text):
+    """抽取「隐藏兑换码汇总」类帖里的纯字母英文码。
+
+    这类码（ifyouarereadingthis / creationnymph 等）没有形态规律，也没有
+    「兑换码：」引导，只能靠强语境词作闸门 + 常见英文单词黑名单来识别，
+    避免把普通英文句子误当码。
+    """
+    if not text or not any(k in text for k in HIDDEN_STRONG_CTX):
+        return []
+    hits, seen = [], set()
+    for match in HIDDEN_TOKEN_RE.finditer(text):
+        token = match.group(0).upper()
+        if token in ENGLISH_NOISE or token in seen:
+            continue
+        seen.add(token)
+        hits.append(CodeHit(token, None, 5, ("强语境隐藏码",)))
+    return hits
+
+
 def find_codes(text):
-    """字母数字启发式 + 标注/书名号/中文列举，合并去重。"""
+    """字母数字启发式 + 标注/书名号/中文列举/隐藏英文码，合并去重。"""
     hits = list(extract(text))
     have = {h.code for h in hits}
-    for hit in extract_marked(text) + extract_bracketed(text) + extract_cn_list(text):
+    for hit in (extract_marked(text) + extract_bracketed(text)
+                + extract_cn_list(text) + extract_hidden_ascii(text)):
         if hit.code not in have:
             have.add(hit.code)
             hits.append(hit)

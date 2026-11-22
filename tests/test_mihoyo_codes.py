@@ -147,6 +147,38 @@ class ExtractTests(unittest.TestCase):
         self.assertNotIn("ZXH68F7WYTN4",
                          {h.code for h in c.find_codes("省流总结：ZXH68F7WYTN4")})
 
+    def test_hidden_ascii_codes_in_summary(self):
+        # 「隐藏兑换码汇总」帖里的纯字母英文码，无形态规律，靠强语境闸门
+        text = ("翁法罗斯版本隐藏兑换码汇总 ifyouarereadingthis farewell "
+                "creationnymph omega 制作攻略不易")
+        got = {h.code for h in c.find_codes(text)}
+        self.assertTrue({"IFYOUAREREADINGTHIS", "FAREWELL", "CREATIONNYMPH", "OMEGA"} <= got)
+        # 说明性中文不应再被误抓成码
+        self.assertNotIn("制作攻略不易", got)
+
+    def test_hidden_ascii_no_strong_context_no_false_positive(self):
+        # 标题/正文无「隐藏/汇总/兑换码」语境时，不把普通英文句子当码
+        for text in ("游戏攻略 欢迎来到提瓦特探索新世界",
+                     "这是一段关于游戏活动的普通介绍 nohidden codes here"):
+            self.assertEqual(c.extract_hidden_ascii(text), [], text)
+
+    def test_hidden_ascii_common_english_excluded(self):
+        text = "隐藏兑换码汇总 this is a normal sentence about the game farewell"
+        got = {h.code for h in c.extract_hidden_ascii(text)}
+        self.assertIn("FAREWELL", got)
+        self.assertNotIn("THIS", got)
+        self.assertNotIn("NORMAL", got)
+
+    def test_hidden_ascii_short_token_and_bare_summary_excluded(self):
+        # 仅「汇总/省流」无「兑换码」字样时不触发隐藏码闸门；4位短词也挡掉
+        for text in ("星布谷地开服前瞻福利资讯省流版汇总 XBGD",
+                     "省流版汇总 omega farewell"):
+            self.assertEqual(c.extract_hidden_ascii(text), [], text)
+
+    def test_summary_keywords_include_hidden(self):
+        for kw in ("隐藏兑换码", "兑换码汇总"):
+            self.assertIn(kw, c.DEFAULT_KEYWORDS)
+
 
 class CollectCodesTests(unittest.TestCase):
     def run_collect(self, response, keywords=("兑换码",), **kwargs):
