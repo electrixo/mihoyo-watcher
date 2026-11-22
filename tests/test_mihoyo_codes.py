@@ -102,6 +102,44 @@ class ExtractTests(unittest.TestCase):
         # 单独的“总结”太宽泛，不应作为搜索词
         self.assertNotIn("总结", c.DEFAULT_KEYWORDS)
 
+    def test_cn_list_comma_separated(self):
+        # 「兑换码：」引导、顿号分隔、无任何括号标注的中文码（4.7 三种写法之一）
+        text = "前瞻直播兑换码：永远不会抛弃你、永远不会欺骗你、星神阿哈祝福你"
+        got = {h.code for h in c.extract_cn_list(text)}
+        self.assertEqual(got, {"永远不会抛弃你", "永远不会欺骗你", "星神阿哈祝福你"})
+
+    def test_cn_list_space_separated(self):
+        text = "兑换码：坏灭肇始之时 天才少年米提亚登场 千星奇域一起拍拍拍"
+        got = {h.code for h in c.extract_cn_list(text)}
+        self.assertEqual(got, {"坏灭肇始之时", "天才少年米提亚登场", "千星奇域一起拍拍拍"})
+
+    def test_cn_list_ignores_instructional_text(self):
+        # 引导词后是说明文字而非码时必须跳过，避免误报
+        for text in ("兑换码：请在游戏内设置中兑换，注意有效期",
+                     "兑换码：关注官方账号获取奖励",
+                     "本活动兑换码有效期至11月22日"):
+            self.assertEqual(c.extract_cn_list(text), [], text)
+
+    def test_all_three_cn_formats_and_ascii(self):
+        # 中英文都能抓：三种中文写法 + 英文码，统一从 find_codes 出口验证
+        cn_cases = [
+            "兑换码①：【永远不会抛弃你】 兑换码②：【永远不会欺骗你】",
+            "国服兑换码（中文）： 永远不会抛弃你 星神阿哈祝福你",
+            "前瞻直播兑换码：永远不会抛弃你、永远不会欺骗你、星神阿哈祝福你",
+        ]
+        for text in cn_cases:
+            got = {h.code for h in c.find_codes(text)}
+            self.assertIn("永远不会抛弃你", got, text)
+        ascii_text = "省流总结：兑换码 ZXH68F7WYTN4 WANZHOU1202"
+        ascii_got = {h.code for h in c.find_codes(ascii_text)}
+        self.assertIn("ZXH68F7WYTN4", ascii_got)
+        self.assertIn("WANZHOU1202", ascii_got)
+
+    def test_ascii_code_without_context_not_false_positive(self):
+        # 无兑换码语境的裸大写串不抓（评分制防误报，避免误判随机串）
+        self.assertNotIn("ZXH68F7WYTN4",
+                         {h.code for h in c.find_codes("省流总结：ZXH68F7WYTN4")})
+
 
 class CollectCodesTests(unittest.TestCase):
     def run_collect(self, response, keywords=("兑换码",), **kwargs):

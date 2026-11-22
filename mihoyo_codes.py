@@ -81,9 +81,13 @@ ASCII_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{3,32}$")
 BRACKET_CODE_RE = re.compile(
     r"兑换码\s*[$①-⑳⒊-⒛\d]?\s*[:：]?\s*【\s*([^】]{2,32}?)\s*】"
 )
+# 「兑换码：中文码A、中文码B、中文码C」这种顿号/空格列举，无任何括号标注。
+# 用「兑换码：」引导 + 句内切片来定位，避免整段正文的普通中文被误判。
+CN_LIST_RE = re.compile(r"(?:兑换码|礼包码)\s*[:：]\s*([^\n]{2,80})")
 SEQ_MARK_RE = re.compile(r"[①②③④⑤⑥⑦⑧⑨⑩]")
 CN_BLOCK = ("兑换码", "兑换", "礼包", "前瞻", "有效期", "截止", "领取", "奖励",
-            "角色", "武器", "版本", "直播")
+            "角色", "武器", "版本", "直播", "获取", "官方", "设置", "关注",
+            "点击", "游戏", "请", "账号", "入口", "方法", "步骤", "详情")
 
 
 @dataclass(frozen=True)
@@ -235,11 +239,32 @@ def extract_bracketed(text):
     return hits
 
 
+def extract_cn_list(text):
+    """抽取「兑换码：中文码A、中文码B」顿号/空格列举的无标注中文码。
+
+    只认「兑换码：」引导后的同一行片段，再按分隔符切片、逐片过中文形态与停用词，
+    兼顾「前瞻直播兑换码：永远不会抛弃你、…」这类无括号写法。
+    """
+    hits, seen = [], set()
+    for match in CN_LIST_RE.finditer(text or ""):
+        for token in re.split(r"[\s、，,;；/|]+", match.group(1)):
+            token = token.strip()
+            if not CN_TOKEN_RE.match(token):
+                continue
+            if any(block in token for block in CN_BLOCK):
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            hits.append(CodeHit(token, "国服", 5, ("兑换码引导中文列举",)))
+    return hits
+
+
 def find_codes(text):
-    """字母数字启发式 + 标注区域短语 + 书名号标注，合并去重。"""
+    """字母数字启发式 + 标注/书名号/中文列举，合并去重。"""
     hits = list(extract(text))
     have = {h.code for h in hits}
-    for hit in extract_marked(text) + extract_bracketed(text):
+    for hit in extract_marked(text) + extract_bracketed(text) + extract_cn_list(text):
         if hit.code not in have:
             have.add(hit.code)
             hits.append(hit)
