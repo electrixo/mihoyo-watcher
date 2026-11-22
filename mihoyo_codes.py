@@ -14,7 +14,11 @@ from typing import Optional, Tuple
 from mihoyo_http import http_json
 
 SEARCH_API = "https://bbs-api.miyoushe.com/post/wapi/searchPosts"
-DEFAULT_KEYWORDS = ("兑换码", "前瞻直播兑换码", "礼包码", "兑换中心", "版本福利")
+DEFAULT_KEYWORDS = (
+    "兑换码", "前瞻直播兑换码", "礼包码", "兑换中心", "版本福利",
+    # 前瞻码常被整理进「总结/省流版」帖，正文里码最全，单独搜这一类
+    "前瞻直播内容总结", "前瞻总结", "省流", "直播总结",
+)
 DEFAULT_EXCLUDE = ("崩坏3", "未定事件簿", "崩坏学园2")
 # 搜索结果按相关度排序，前列常是 1-3 周前的帖子；7 天会漏掉大量前瞻码。
 # 重复由 code 去重兜底，首轮 seed 也不会推送，所以放宽到 30 天。
@@ -71,6 +75,13 @@ MARKER_RE = re.compile(
 )
 CN_TOKEN_RE = re.compile(r"^[\u4e00-\u9fff]{4,12}$")
 ASCII_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{3,32}$")
+
+# 「兑换码①：【永远不会抛弃你】」这类图文汇总帖的写法：序号 + 书名号包裹码。
+# 码本身可以是中文短句或英文串，统一按国服/未标注处理（这类帖几乎都是国服码）。
+BRACKET_CODE_RE = re.compile(
+    r"兑换码\s*[$①-⑳⒊-⒛\d]?\s*[:：]?\s*【\s*([^】]{2,32}?)\s*】"
+)
+SEQ_MARK_RE = re.compile(r"[①②③④⑤⑥⑦⑧⑨⑩]")
 CN_BLOCK = ("兑换码", "兑换", "礼包", "前瞻", "有效期", "截止", "领取", "奖励",
             "角色", "武器", "版本", "直播")
 
@@ -199,11 +210,36 @@ def extract_marked(text):
     return hits
 
 
+def extract_bracketed(text):
+    """抽取「兑换码①：【码】」书名号里的码（中文短句或英文串）。
+
+    这类汇总帖很常见（尤其省流版），码形态完全无规律，靠标注结构识别最稳。
+    """
+    hits, seen = [], set()
+    for match in BRACKET_CODE_RE.finditer(text or ""):
+        token = match.group(1).strip()
+        if CN_TOKEN_RE.match(token):
+            if any(block in token for block in CN_BLOCK):
+                continue
+            code = token
+        elif ASCII_TOKEN_RE.match(token):
+            code = token.upper()
+            if code in STOPWORDS or code.isdigit():
+                continue
+        else:
+            continue
+        if code in seen:
+            continue
+        seen.add(code)
+        hits.append(CodeHit(code, "国服", 6, ("书名号标注兑换码",)))
+    return hits
+
+
 def find_codes(text):
-    """字母数字启发式 + 标注区域短语，合并去重。"""
+    """字母数字启发式 + 标注区域短语 + 书名号标注，合并去重。"""
     hits = list(extract(text))
     have = {h.code for h in hits}
-    for hit in extract_marked(text):
+    for hit in extract_marked(text) + extract_bracketed(text):
         if hit.code not in have:
             have.add(hit.code)
             hits.append(hit)

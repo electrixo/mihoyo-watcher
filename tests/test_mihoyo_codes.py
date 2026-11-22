@@ -74,6 +74,34 @@ class ExtractTests(unittest.TestCase):
     def test_marked_header_words_are_ignored(self):
         self.assertEqual(c.extract_marked("国服兑换码： 前瞻兑换码 有效期"), [])
 
+    def test_bracketed_chinese_codes_with_sequence(self):
+        # 「兑换码①：【...】」是省流/总结帖的常见写法，中文码形态无规律
+        text = ("兑换码①：【永远不会抛弃你】 兑换码②：【永远不会欺骗你】 "
+                "兑换码③：【星神阿哈祝福你】\n兑换码有效期至11月22日")
+        hits = {h.code: h.region for h in c.extract_bracketed(text)}
+        self.assertEqual(set(hits), {"永远不会抛弃你", "永远不会欺骗你", "星神阿哈祝福你"})
+        self.assertTrue(all(r == "国服" for r in hits.values()))
+
+    def test_bracketed_ascii_code(self):
+        hits = {h.code for h in c.extract_bracketed("兑换码①：【SUNCHASER】")}
+        self.assertEqual(hits, {"SUNCHASER"})
+
+    def test_bracketed_ignores_noise_words(self):
+        # 书名号内是说明性文字而非码时应跳过
+        self.assertEqual(c.extract_bracketed("兑换码①：【有效期至11月22日】"), [])
+
+    def test_find_codes_merges_bracketed(self):
+        text = "省流版总结：兑换码①：【永远不会抛弃你】 ZXH68F7WYTN4"
+        got = {h.code for h in c.find_codes(text)}
+        self.assertIn("永远不会抛弃你", got)
+        self.assertIn("ZXH68F7WYTN4", got)
+
+    def test_summary_keywords_present(self):
+        for kw in ("前瞻直播内容总结", "前瞻总结", "省流", "直播总结"):
+            self.assertIn(kw, c.DEFAULT_KEYWORDS)
+        # 单独的“总结”太宽泛，不应作为搜索词
+        self.assertNotIn("总结", c.DEFAULT_KEYWORDS)
+
 
 class CollectCodesTests(unittest.TestCase):
     def run_collect(self, response, keywords=("兑换码",), **kwargs):
