@@ -302,6 +302,18 @@ def main(argv):
     if failures:
         log(f"[WARN] 本轮有 {failures}/{total} 个请求失败")
 
+    # 评论区取码：默认关闭（接口需 DS 签名、协议可能变动）。设 MIHOYO_COMMENTS=1 开启。
+    # 失败只记 WARN，绝不影响正文抓码主流程。
+    if os.environ.get("MIHOYO_COMMENTS") == "1":
+        try:
+            import mihoyo_comments
+            comment_hits = mihoyo_comments.collect_comment_codes()
+            if comment_hits:
+                log(f"评论区补抓 {len(comment_hits)} 个码")
+                code_hits.extend(comment_hits)
+        except Exception as e:
+            log(f"[WARN] 评论区取码跳过：{type(e).__name__}: {e}")
+
     seen, first_run = load_seen()
     new_items, push_items = select_new(items, seen)
     new_hits = select_new_codes(code_hits, seen)
