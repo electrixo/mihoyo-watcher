@@ -113,6 +113,13 @@ class ExtractTests(unittest.TestCase):
         got = {h.code for h in c.extract_cn_list(text)}
         self.assertEqual(got, {"坏灭肇始之时", "天才少年米提亚登场", "千星奇域一起拍拍拍"})
 
+    def test_cn_list_without_colon(self):
+        # 「兑换码」后无冒号、后接中文码再接说明文字（4.7 总结帖真实写法）
+        text = ("兑换码 永远不会抛弃你 永远不会欺骗你 星神阿哈祝福你 "
+                "不方便直接复制的可以去评论区")
+        got = {h.code for h in c.extract_cn_list(text)}
+        self.assertEqual(got, {"永远不会抛弃你", "永远不会欺骗你", "星神阿哈祝福你"})
+
     def test_cn_list_ignores_instructional_text(self):
         # 引导词后是说明文字而非码时必须跳过，避免误报
         for text in ("兑换码：请在游戏内设置中兑换，注意有效期",
