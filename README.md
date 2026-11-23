@@ -49,22 +49,6 @@ GitHub Actions 定时触发
 
 ## 快速开始
 
-### 1. 上传文件
-
-```
-src/watch_mihoyo.py
-src/mihoyo_codes.py
-src/mihoyo_comments.py
-src/mihoyo_http.py
-src/checkin.py
-tests/
-.github/workflows/watch.yml
-.gitattributes
-.gitignore
-```
-
-### 2. 配置 Secrets
-
 仓库 Settings → Secrets and variables → Actions → **Secrets**：
 
 | Name | 必填 | 说明 |
@@ -99,33 +83,6 @@ GitHub cron 使用 UTC；下面的「北京时间」是触发时刻（实际送�
 | 周三/五/六 22:07、22:37 | `7,37 14 * * 3,5,6` | 只抓兑换码 | 有新码 → 「新兑换码」 |
 
 也可以手动 Run workflow，勾选 `dry_run`（只抓取不推送/不写状态）或 `test_push`（只发一条测试消息）。
-
-## 本地运行
-
-```bash
-# 测试（全离线）
-python -m unittest discover -s tests -t .
-
-# 福利 + 兑换码
-python src/watch_mihoyo.py
-python src/watch_mihoyo.py --dry-run
-python src/watch_mihoyo.py --seed
-python src/watch_mihoyo.py --codes-only
-python src/watch_mihoyo.py --test-push
-
-# 签到
-python src/checkin.py --probe
-python src/checkin.py --dry-run
-python src/checkin.py
-```
-
-环境变量（Windows cmd / PowerShell / bash 写法不同）：
-
-```
-PUSHPLUS_TOKEN=...
-CHECKIN_COOKIE=...
-CHECKIN_DEVICE_ID=...   # 可选
-```
 
 ## 目录结构
 
