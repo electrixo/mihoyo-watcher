@@ -152,11 +152,6 @@ state/
 - 本项目只使用 `schedule` 和 `workflow_dispatch`，不使用 `pull_request_target` / `workflow_run`
 - 签到默认关闭，未设置 `CHECKIN_ENABLED=true` 时不会执行
 
-### 公开仓库意味着什么
-
-- Actions 日志和 Job Summary 是公开的；代码已对 Cookie 打码，仍请不要把凭证写进任何文件
-- 状态文件只包含日期、post_id、兑换码和计数，不包含凭证
-
 ### 如果你是 fork 的使用者
 
 - 请自行配置自己的 Secrets 和 Variables，并自行承担账号风控、封号等风险
