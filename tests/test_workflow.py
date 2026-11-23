@@ -20,19 +20,23 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parent.parent / ".github" / "workflows" / "watch.yml"
 )
 
-# 设计意图：当前只支持这四条调度
-# cron 是 UTC，且「触发时刻 ≠ 执行时刻」：实测 GitHub 会延迟 7~9.5 小时才
-# 创建运行，所以下面写的是已经扣掉提前量的触发时刻，注释里的送达时间是推算值。
-DIGEST_MAIN = "45 18 * * *"          # BJT 02:45 触发 → 预计 11:10 送达  日报主跑
-DIGEST_BACKUP = "15 20 * * *"        # BJT 04:15 触发 → 预计 12:40 送达  日报兜底
-DIGEST_CRONS = {DIGEST_MAIN, DIGEST_BACKUP}
-CHECKIN_BACKUP = "10 6 * * *"        # BJT 14:10 触发 → 预计 23:30 送达  签到兜底
-FORWARD_LOOK = "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 触发 → 只抓码
-EXPECTED_CRONS = DIGEST_CRONS | {CHECKIN_BACKUP, FORWARD_LOOK}
+# 设计意图：四条调度，职责拆分
+#   CODES_NIGHT    02:45 BJT → 只抓码（不抓资讯、不签到）
+#   DIGEST         04:15 BJT → 完整日报 + 签到
+#   CHECKIN_BACKUP 14:10 BJT → 签到兜底
+#   FORWARD_LOOK   周三/五/六 22:07、22:37 → 只抓码
+# cron 是 UTC；实测 GitHub 会延迟数小时才创建运行，注释里是触发时刻。
+CODES_NIGHT = "45 18 * * *"
+DIGEST = "15 20 * * *"
+CHECKIN_BACKUP = "10 6 * * *"
+FORWARD_LOOK = "7,37 14 * * 3,5,6"
+CODES_ONLY_CRONS = {CODES_NIGHT, FORWARD_LOOK}
+EXPECTED_CRONS = {CODES_NIGHT, DIGEST, CHECKIN_BACKUP, FORWARD_LOOK}
 
 TEST_MODULES = (
     "tests.test_watch_mihoyo",
     "tests.test_mihoyo_codes",
+    "tests.test_mihoyo_comments",
     "tests.test_workflow",
 )
 
@@ -83,42 +87,42 @@ class WorkflowContractTests(unittest.TestCase):
 
     # ---- job 分工 -------------------------------------------------------
 
+    def test_checkin_job_is_opt_in(self):
+        self.assertIn(
+            "vars.CHECKIN_ENABLED == 'true'", self.checkin,
+            "签到 job 必须在 CHECKIN_ENABLED=true 时才运行，避免未配置时天天告警",
+        )
+
     def test_checkin_backup_must_not_trigger_the_digest_job(self):
         self.assertNotIn(
             CHECKIN_BACKUP, self.watch,
-            "签到兜底不应该触发 watch job（日报只由 DIGEST_CRONS 与前瞻窗口触发）",
+            "签到兜底不应该触发 watch job（日报只由 DIGEST 与只抓码 cron 触发）",
         )
         self.assertIn(CHECKIN_BACKUP, self.checkin)
 
-    def test_watch_job_handles_digest_and_forward_look_only(self):
-        for cron in sorted(DIGEST_CRONS):
+    def test_watch_job_handles_codes_digest_and_forward_look(self):
+        for cron in (CODES_NIGHT, DIGEST, FORWARD_LOOK):
             with self.subTest(cron=cron):
-                self.assertIn(cron, self.watch, f"日报调度 `{cron}` 没有触发 watch job")
-        self.assertIn(FORWARD_LOOK, self.watch)
-        self.assertNotIn(
-            FORWARD_LOOK, self.checkin,
-            "前瞻窗口只抓兑换码，不应该顺带跑签到",
-        )
+                self.assertIn(cron, self.watch, f"`{cron}` 没有触发 watch job")
+        self.assertNotIn(CHECKIN_BACKUP, self.watch)
 
-    def test_digest_crons_also_cover_checkin(self):
-        # 签到搭日报主跑的车；签到幂等（已签返回 -5003 视为成功），多跑无害
-        for cron in sorted(DIGEST_CRONS):
+    def test_checkin_runs_on_digest_and_backup_only(self):
+        # 02:45 只抓码；签到只在 04:15 日报与 14:10 兜底运行
+        self.assertIn(DIGEST, self.checkin)
+        self.assertIn(CHECKIN_BACKUP, self.checkin)
+        self.assertNotIn(CODES_NIGHT, self.checkin)
+        self.assertNotIn(FORWARD_LOOK, self.checkin)
+
+    def test_codes_only_branch_covers_night_and_forward_look(self):
+        self.assertIn("--codes-only", self.watch,
+                      "抓取步骤里找不到 --codes-only 分支")
+        start = self.watch.find("elif")
+        self.assertNotEqual(start, -1, "抓取步骤里找不到 elif 分支")
+        branch = self.watch[start:start + 500]
+        for cron in CODES_ONLY_CRONS:
             with self.subTest(cron=cron):
-                self.assertIn(cron, self.checkin,
-                              f"日报调度 `{cron}` 应同时覆盖签到")
-
-    def test_codes_only_elif_matches_the_forward_look_cron(self):
-        match = re.search(
-            r'elif\s*\[\s*"\$\{\{\s*github\.event\.schedule\s*\}\}"\s*=\s*"([^"]+)"\s*\]',
-            self.watch,
-        )
-        self.assertIsNotNone(match, "抓取步骤里找不到区分 --codes-only 的 elif 分支")
-        self.assertEqual(match.group(1), FORWARD_LOOK)
-        branch = self.watch[match.end():]
-        self.assertIn(
-            "--codes-only", branch[:400],
-            "elif 命中后必须切到 --codes-only，否则前瞻窗口会误推整份日报",
-        )
+                self.assertIn(cron, branch, f"`{cron}` 没有切到 --codes-only")
+        self.assertIn("--codes-only", branch)
 
     # ---- 手动触发入口 ---------------------------------------------------
 
@@ -132,6 +136,10 @@ class WorkflowContractTests(unittest.TestCase):
         )
 
     # ---- 步骤契约 -------------------------------------------------------
+
+    def test_scripts_run_from_src(self):
+        self.assertIn("python src/watch_mihoyo.py", self.watch)
+        self.assertIn("python src/checkin.py", self.checkin)
 
     def test_unit_test_step_runs_every_module(self):
         match = re.search(r"python -m unittest ([^\n]+)", self.text)
@@ -147,8 +155,8 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_state_commit_is_path_limited(self):
         # 只提交状态文件：避免把工作区里的杂物（__pycache__、临时目录）带进仓库
-        self.assertIn("git add -A -- seen_news.json", self.watch)
-        self.assertIn("git add -A -- checkin_state.json", self.checkin)
+        self.assertIn("git add -A -- state/seen_news.json", self.watch)
+        self.assertIn("git add -A -- state/checkin_state.json", self.checkin)
 
     def test_jobs_are_serialized_and_always_run_state_step(self):
         self.assertIn("needs: watch", self.checkin)

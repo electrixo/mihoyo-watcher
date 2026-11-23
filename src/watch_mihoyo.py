@@ -47,7 +47,8 @@ TYPES = {1: "公告", 2: "活动", 3: "资讯"}
 # 公告 / 资讯按关键词过滤；活动（type=2）全收。
 KEYWORDS = ("福利", "签到", "礼包", "兑换码", "前瞻", "领取", "奖励", "活动", "兑换")
 
-STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_news.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATE_PATH = os.path.join(ROOT, "state", "seen_news.json")
 PAGE_SIZE = 10
 KEEP_DAYS = 90
 PAUSE_SECONDS = 0.3
@@ -157,6 +158,7 @@ def save_seen(seen):
                 return False
     except OSError:
         pass
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
@@ -255,12 +257,17 @@ def push(title, body):
         )
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             result = json.loads(decode_body(resp.read(), resp.headers.get("Content-Encoding")))
-        if result.get("code") != 200:
-            log(f"[WARN] 推送返回异常：{result}")
+        code = result.get("code")
+        if code != 200:
+            if code == 903:
+                log("[ERROR] PUSHPLUS_TOKEN 无效或已过期（code=903），请更新 Secret")
+            else:
+                log(f"[ERROR] 推送返回异常：code={code} "
+                    f"msg={result.get('msg') or result.get('message') or ''}")
             return False
         return True
     except Exception as e:
-        log(f"[WARN] 推送失败：{e}")
+        log(f"[ERROR] 推送失败：{type(e).__name__}: {e}")
         return False
 
 
@@ -293,12 +300,16 @@ def main(argv):
         return 1
 
     if codes_only:
-        items, failures, total = [], 0, 0
+        items, news_failures, news_total = [], 0, 0
     else:
-        items, failures, total = collect(page_size)
+        items, news_failures, news_total = collect(page_size)
     code_hits, code_failures, code_total = mihoyo_codes.collect_codes()
-    failures += code_failures
-    total += code_total
+    failures = news_failures + code_failures
+    total = news_total + code_total
+    if news_total and news_failures == news_total:
+        log("[ERROR] 资讯抓取全部失败（可能网络或接口异常）")
+    if code_total and code_failures == code_total:
+        log("[ERROR] 兑换码搜索全部失败（可能触发 1034 或接口变更）")
     if failures:
         log(f"[WARN] 本轮有 {failures}/{total} 个请求失败")
 
@@ -332,8 +343,16 @@ def main(argv):
         log(f"首次/强制登记：记录 {len(new_items)} 条内容 / {len(new_hits)} 个兑换码，不推送")
         return 0
 
+    if new_hits:
+        for hit in new_hits:
+            log(f"[码] + {hit['code']} | {hit.get('game') or '未识别'} | "
+                f"{hit.get('region') or '未标注'} | score={hit.get('score', 0)}")
+        log(f"[码] 本轮新码 {len(new_hits)} 个（候选 {len(code_hits)} 个）")
+    else:
+        log(f"[码] 本轮未发现新兑换码（候选 {len(code_hits)} 个）")
+
     if not new_items and not new_hits:
-        log("没有新的兑换码" if codes_only else "没有新的福利内容或兑换码")
+        log("本轮无新增内容")
         return 0 if failures < total else 1
 
     if not push_items and not new_hits:
@@ -357,8 +376,12 @@ def main(argv):
 
     result = push(title, body)
     if result is False:
-        log("推送失败，本轮不记录状态，下轮重试")
+        log("[ERROR] 推送失败，本轮不记录状态，下轮重试")
         return 1
+    if result is None:
+        log("[推送] 未配置 PUSHPLUS_TOKEN，仅记录状态（不会送达）")
+    else:
+        log(f"[推送] 成功：{title}")
 
     mark_seen(seen, new_items, new_hits, today)
     prune_seen(seen)

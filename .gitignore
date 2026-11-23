@@ -3,10 +3,7 @@ config.json
 cookie.json
 
 # 运行产物
-state/seen.json
-state/seen.json.tmp
-checkin_state.json.tmp
-seen_news.json.tmp
+state/*.tmp
 *.log
 
 # Python

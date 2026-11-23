@@ -285,6 +285,9 @@ class MainTests(unittest.TestCase):
         self.assertIn("兑换码", body)
         seen, _ = w.load_seen()
         self.assertIn("STARRAIL9A8B7C", seen["codes"])
+        # 日志要能看到：具体哪个码、推送结果
+        self.assertIn("[码] + STARRAIL9A8B7C", self.out.getvalue())
+        self.assertIn("[推送] 成功", self.out.getvalue())
 
     def test_same_code_not_pushed_twice(self):
         self.run_main([item("1001")])
@@ -316,7 +319,31 @@ class MainTests(unittest.TestCase):
             code = w.main(["--codes-only"])
         self.assertEqual(code, 0)
         self.assertEqual(self.pushed, [])
-        self.assertIn("没有新的兑换码", self.out.getvalue())
+        self.assertIn("本轮未发现新兑换码", self.out.getvalue())
+
+
+class PushResultTests(unittest.TestCase):
+    def test_token_invalid_logs_error(self):
+        class Resp:
+            headers = {}
+
+            def read(self):
+                return b'{"code":903,"msg":"invalid token"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        out = StringIO()
+        with mock.patch.dict(os.environ, {"PUSHPLUS_TOKEN": "x"}), \
+                mock.patch.object(w.urllib.request, "urlopen", return_value=Resp()), \
+                redirect_stdout(out):
+            ok = w.push("t", "b")
+        self.assertFalse(ok)
+        self.assertIn("PUSHPLUS_TOKEN", out.getvalue())
+        self.assertIn("903", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -17,7 +17,8 @@ SIGNGAME = {"hk4e_cn": "hk4e", "hkrpg_cn": "hkrpg", "nap_cn": "zzz"}
 BINDING_URL = "https://api-takumi.mihoyo.com/binding/api/getUserGameRolesByCookie"
 CTX = ssl.create_default_context()
 
-STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkin_state.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATE_PATH = os.path.join(ROOT, "state", "checkin_state.json")
 TIMEOUT = 15
 MAX_RETRY = 2
 
@@ -202,6 +203,7 @@ def save_state(state):
                 return False
     except OSError:
         pass
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
@@ -241,7 +243,7 @@ def notify(title, content):
     token = os.environ.get("PUSHPLUS_TOKEN", "")
     if not token:
         log("[WARN] 未配置 PUSHPLUS_TOKEN，跳过告警推送")
-        return False
+        return None
     payload = json.dumps(
         {"token": token, "title": title, "content": content, "template": "txt"},
         ensure_ascii=False,
@@ -254,12 +256,18 @@ def notify(title, content):
         )
         with urllib.request.urlopen(req, timeout=TIMEOUT, context=CTX) as r:
             resp = json.loads(r.read().decode("utf-8", "replace"))
-        if resp.get("code") != 200:
-            log(f"[WARN] 推送返回异常: {resp}")
+        code = resp.get("code")
+        if code != 200:
+            if code == 903:
+                log("[ERROR] PUSHPLUS_TOKEN 无效或已过期（code=903），告警无法送达")
+            else:
+                log(f"[ERROR] 告警推送返回异常：code={code} "
+                    f"msg={resp.get('msg') or resp.get('message') or ''}")
             return False
+        log("[告警] 推送成功")
         return True
     except Exception as e:
-        log(f"[WARN] 推送失败: {e}")
+        log(f"[ERROR] 告警推送失败：{type(e).__name__}: {e}")
         return False
 
 
@@ -297,8 +305,11 @@ def main(argv):
         state = load_state()
         state["last_run"] = today
         if should_alert(state, st, today):
-            record_alert(state, st, today)
-            notify(f"米游社签到异常：{st}", ADVICE.get(st, ""))
+            sent = notify(f"米游社签到异常：{st}", ADVICE.get(st, ""))
+            if sent is False:
+                log("[ERROR] 告警未送达，本次不推进告警阶梯，下轮重试")
+            else:
+                record_alert(state, st, today)
         save_state(state)
         return 1
 
@@ -374,10 +385,14 @@ def main(argv):
         state["last_ok"] = today
         state["alerts"] = {}
     elif should_alert(state, status, today):
-        record_alert(state, status, today)
         detail = "\n".join(f"{n} {k}: {d}" for n, k, s, d in results) or "无明细"
-        notify(f"米游社签到异常：{status}",
-               f"{detail}\n\n时间：{time.strftime('%Y-%m-%d %H:%M')}\n建议：{ADVICE.get(status, '')}")
+        sent = notify(f"米游社签到异常：{status}",
+                      f"{detail}\n\n时间：{time.strftime('%Y-%m-%d %H:%M')}\n"
+                      f"建议：{ADVICE.get(status, '')}")
+        if sent is False:
+            log("[ERROR] 告警未送达，本次不推进告警阶梯，下轮重试")
+        else:
+            record_alert(state, status, today)
     save_state(state)
 
     return 0 if status == "ok" else 1

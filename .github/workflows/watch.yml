@@ -6,19 +6,19 @@ name: 米游社福利与签到
 # 实测三次 schedule 运行（11-18/11-19）：GitHub 会把定时任务延迟 7~9.5 小时才创建运行，
 # 而「创建 → 开跑」的排队延迟恒为 0。延迟发生在调度器决定「何时创建」这一步，
 # 本文件控制不了。所以把 cron 提前约 8.5 小时，让「触发时刻 + 偏移」落在目标时间：
-#   02:45 BJT 触发（UTC 18:45 前一天）→ 预计 11:10 送达  日报主跑 + 签到
-#   04:15 BJT 触发（UTC 20:15 前一天）→ 预计 12:40 送达  日报兜底
-#   14:10 BJT 触发（UTC 06:10）       → 预计 23:30 送达  签到兜底（幂等）
-#   周三/五/六 22:07、22:37 BJT 触发   → 预计次日 05:50   前瞻窗口（只抓码）
+#   02:45 BJT 触发（UTC 18:45 前一天）→ 只抓兑换码（不抓资讯、不签到）
+#   04:15 BJT 触发（UTC 20:15 前一天）→ 完整日报（资讯+码）+ 签到
+#   14:10 BJT 触发（UTC 06:10）       → 签到兜底（幂等）
+#   周三/五/六 22:07、22:37 BJT 触发   → 只抓码
 #
 # 注意：偏移量不是常数（三个样本跨度已达 1.7 小时）。若某天偏移缩小，日报会提前到凌晨。
 # 这是赌偏移稳定，不是可靠方案；要稳只能绕开调度器，改用外部 workflow_dispatch 触发。
 
 on:
   schedule:
-    - cron: "45 18 * * *"         # BJT 02:45 触发 → 预计 11:10 送达  日报主跑 + 签到
-    - cron: "15 20 * * *"         # BJT 04:15 触发 → 预计 12:40 送达  日报兜底
-    - cron: "10 6 * * *"          # BJT 14:10 触发 → 预计 23:30 送达  签到兜底
+    - cron: "45 18 * * *"         # BJT 02:45 触发 → 只抓兑换码（不抓资讯、不签到）
+    - cron: "15 20 * * *"         # BJT 04:15 触发 → 完整日报 + 签到
+    - cron: "10 6 * * *"          # BJT 14:10 触发 → 签到兜底
     - cron: "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 触发 → 只抓码
   workflow_dispatch:
     inputs:
@@ -32,7 +32,7 @@ on:
         default: false
 
 permissions:
-  contents: write                 # 提交 seen_news.json / checkin_state.json
+  contents: write                 # 提交 state/ 下的状态文件
 
 concurrency:
   group: mihoyo-watch
@@ -60,7 +60,7 @@ jobs:
 
       # 只跑新项目的测试；不要上传 tests/test_config.py / test_models.py
       - name: 单元测试
-        run: python -m unittest tests.test_watch_mihoyo tests.test_mihoyo_codes tests.test_workflow
+        run: python -m unittest tests.test_watch_mihoyo tests.test_mihoyo_codes tests.test_mihoyo_comments tests.test_workflow
 
       - name: 随机延迟
         if: github.event_name == 'schedule'
@@ -77,11 +77,11 @@ jobs:
           TEST=""
           if [ "${{ inputs.test_push }}" = "true" ]; then TEST="--test-push"; fi
           if [ -n "$TEST" ]; then
-            python watch_mihoyo.py --test-push 2>&1 | tee watch.log
-          elif [ "${{ github.event.schedule }}" = "7,37 14 * * 3,5,6" ]; then
-            python watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
+            python src/watch_mihoyo.py --test-push 2>&1 | tee watch.log
+          elif [ "${{ github.event.schedule }}" = "45 18 * * *" ] || [ "${{ github.event.schedule }}" = "7,37 14 * * 3,5,6" ]; then
+            python src/watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
           else
-            python watch_mihoyo.py $DRY 2>&1 | tee watch.log
+            python src/watch_mihoyo.py $DRY 2>&1 | tee watch.log
           fi
 
       - name: 提交状态
@@ -89,7 +89,7 @@ jobs:
         run: |
           git config user.name  "codewatch-bot"
           git config user.email "codewatch-bot@users.noreply.github.com"
-          git add -A -- seen_news.json 2>/dev/null || true
+          git add -A -- state/seen_news.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "状态无变化，跳过提交"
           else
@@ -110,12 +110,15 @@ jobs:
   checkin:
     # 串行：两个 job 都会 commit/push，避免 non-fast-forward
     needs: watch
-    # 福利 job 被跳过或失败时，签到仍照常跑
+    # 签到必须显式开启：仓库 Variables 里设置 CHECKIN_ENABLED=true 才会跑。
+    # 未开启时整个 job 跳过（不消耗时间、不签到、不发任何签到告警）。
+    # 开启后若没配 CHECKIN_COOKIE，脚本会 exit 0 跳过，同样不会告警。
+    # 福利 job 被跳过或失败时，签到仍照常跑。
     if: |
       always() &&
+      vars.CHECKIN_ENABLED == 'true' &&
       !(github.event_name == 'workflow_dispatch' && inputs.test_push) && (
         github.event_name == 'workflow_dispatch' ||
-        github.event.schedule == '45 18 * * *' ||
         github.event.schedule == '15 20 * * *' ||
         github.event.schedule == '10 6 * * *'
       )
@@ -142,14 +145,14 @@ jobs:
           set -o pipefail
           DRY=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
-          python checkin.py $DRY 2>&1 | tee checkin.log
+          python src/checkin.py $DRY 2>&1 | tee checkin.log
 
       - name: 提交状态
         if: always()
         run: |
           git config user.name  "codewatch-bot"
           git config user.email "codewatch-bot@users.noreply.github.com"
-          git add -A -- checkin_state.json 2>/dev/null || true
+          git add -A -- state/checkin_state.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "状态无变化，跳过提交"
           else

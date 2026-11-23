@@ -1,59 +1,214 @@
 # 米游社福利监测与自动签到
 
-一个只做米游社的轻量小工具：
+一个只做米游社的轻量工具，零第三方依赖，默认跑在 GitHub Actions 上：
 
-- 每天把官方公告 / 活动 / 资讯和新兑换码汇总成一条消息，推送到微信
-- 可选：用自己的 Cookie 自动完成原神 / 星铁 / 绝区零的每日签到
-- 零第三方依赖，只需要 Python 标准库；默认跑在 GitHub Actions 上
+- **福利监测**：原神 / 崩坏：星穹铁道 / 绝区零 的公告、活动、资讯
+- **兑换码提醒**：字母数字码 + 中文短语码（如 `坏灭肇始之时`）+ 国际服英文短语
+- **自动签到（可选，默认关闭）**：用自己的 Cookie 签到，失败才告警
 
-> 只读部分不需要登录，也不会接触你的账号；签到部分只在你自己配置了 Cookie 时启用。
+只读部分不需要登录，也不会接触你的账号；签到部分只在你自己开启并配置 Cookie 后才启用。
 
-## 功能
+## 工作方式
+
+```
+GitHub Actions 定时触发
+  ├─ 只抓码轮次：搜索兑换码 → 新码就推「新兑换码」
+  └─ 日报轮次：资讯 + 兑换码 → 过滤/去重 → 合并成一条日报 → pushplus 推送
+签到（可选）：角色 → 今日是否已签 → 签到 → 失败告警
+```
+
+- 资讯按 `post_id` 去重，兑换码按 `code` 去重
+- 首次运行只登记历史，不推送
+- 没有新内容时不推送
+- 推送失败不记录状态，下一轮重试
+
+## 功能细节
 
 ### 福利监测（只读）
-- 覆盖原神、崩坏：星穹铁道、绝区零的公告（type=1）、活动（type=2）、资讯（type=3）
+
+- 覆盖 3 款游戏的公告（type=1）、活动（type=2）、资讯（type=3）
 - 活动全收；公告与资讯按关键词过滤（福利 / 签到 / 礼包 / 兑换码 / 前瞻 / 领取 / 奖励等）
-- 按 `post_id` 去重；首次运行只登记历史，不推送
+- 日报按游戏分组，附标题、摘要和原文链接
 
 ### 兑换码提醒（只读）
+
 - 用米游社搜索接口，默认 5 个关键词
 - 支持两类码：
-  - 大写字母数字，如 `STARRAIL9A8B7C`
+  - 字母数字，如 `STARRAIL9A8B7C`
   - 中文短语，如 `坏灭肇始之时`；以及国际服英文短语，如 `nevergonnagive`
 - 评分制识别 + 纯字母候选过滤，尽量减少误报
+- 可选评论区取码（默认关闭，需 `MIHOYO_COMMENTS=1` 且接口可用）
 
-### 自动签到（可选，需要自己的 Cookie）
+### 自动签到（可选）
+
 - 原神 / 星铁 / 绝区零
-- 签到前先查 `info.is_sign`，已签跳过；签到接口本身幂等（重复返回 -5003）
-- 失败分类：
-  - 网络错误：有限重试
-  - 登录失效（-100）：停止本轮并告警
-  - 人机验证（1034）：停止本轮，不重试、不绕过
-  - 协议参数失效（-1）：提示核对版本 / 盐值 / act_id
+- 签到前先查 `info.is_sign`，已签跳过；签到接口幂等（重复返回 -5003 视为成功）
+- 失败分类：网络错误有限重试；登录失效 / 人机验证 / 协议参数失效会停止本轮
 - 失败告警按 1 / 3 / 7 天阶梯发送，避免每天轰炸
+- **默认不运行**：仓库 Variables 里设置 `CHECKIN_ENABLED=true` 才会执行
 
-## 它不做什么
+## 快速开始
 
-- 不代替你兑换，只提醒
-- 不识别验证码、不伪造设备指纹、不使用代理池
-- 不收集他人 Cookie；签到只使用你配置在自己仓库 Secrets 里的凭证
-- 不做多账号、Web UI、数据库
+### 1. 上传文件
+
+```
+src/watch_mihoyo.py
+src/mihoyo_codes.py
+src/mihoyo_comments.py
+src/mihoyo_http.py
+src/checkin.py
+tests/
+.github/workflows/watch.yml
+.gitattributes
+.gitignore
+```
+
+### 2. 配置 Secrets
+
+仓库 Settings → Secrets and variables → Actions → **Secrets**：
+
+| Name | 必填 | 说明 |
+|---|---|---|
+| `PUSHPLUS_TOKEN` | 推荐 | pushplus 的 token；不填时只打印日志，不推送 |
+| `CHECKIN_COOKIE` | 签到必填 | 米游社 Cookie，需包含 `cookie_token` / `ltuid` 等登录字段 |
+| `CHECKIN_DEVICE_ID` | 可选 | 固定设备标识；不填时按 Cookie 稳定派生 |
+
+也支持 `CHECKIN_COOKIE_B64`：Cookie 串或 `{"cookies": {...}, "device": "..."}` 的 base64。
+
+Cookie 获取：浏览器登录米游社 → 开发者工具 → 任意请求的 Cookie 头，复制完整值。它等价于登录凭证，只放 Secrets。
+
+### 3. 配置 Variables（签到开关）
+
+同一页面 → **Variables** → New repository variable：
+
+| Name | Value |
+|---|---|
+| `CHECKIN_ENABLED` | `true` |
+
+不设置时，签到 job 会直接跳过：不执行、不消耗时间、不发任何签到告警。
+
+### 4. 定时任务
+
+GitHub cron 使用 UTC；下面的「北京时间」是触发时刻（实际送达会因 GitHub 队列延迟数小时，见「已知限制」）：
+
+| 北京时间 | UTC cron | 运行内容 | 推送 |
+|---|---|---|---|
+| 02:45 | `45 18 * * *` | 只抓兑换码 | 有新码 → 「新兑换码」 |
+| 04:15 | `15 20 * * *` | 完整日报 + 签到 | 有新资讯/新码 → 日报；签到失败 → 告警 |
+| 14:10 | `10 6 * * *` | 签到兜底 | 仅失败告警 |
+| 周三/五/六 22:07、22:37 | `7,37 14 * * 3,5,6` | 只抓兑换码 | 有新码 → 「新兑换码」 |
+
+也可以手动 Run workflow，勾选 `dry_run`（只抓取不推送/不写状态）或 `test_push`（只发一条测试消息）。
+
+## 本地运行
+
+```bash
+# 测试（全离线）
+python -m unittest discover -s tests -t .
+
+# 福利 + 兑换码
+python src/watch_mihoyo.py
+python src/watch_mihoyo.py --dry-run
+python src/watch_mihoyo.py --seed
+python src/watch_mihoyo.py --codes-only
+python src/watch_mihoyo.py --test-push
+
+# 签到
+python src/checkin.py --probe
+python src/checkin.py --dry-run
+python src/checkin.py
+```
+
+环境变量（Windows cmd / PowerShell / bash 写法不同）：
+
+```
+PUSHPLUS_TOKEN=...
+CHECKIN_COOKIE=...
+CHECKIN_DEVICE_ID=...   # 可选
+```
+
+## 目录结构
+
+```
+docs/
+  HANDOFF.md          交接/设计说明
+src/
+  watch_mihoyo.py     入口：资讯 + 兑换码日报
+  mihoyo_codes.py     搜索采集 + 兑换码识别（含中文码）
+  mihoyo_comments.py  评论区取码（默认关闭）
+  mihoyo_http.py      HTTP 公共层：gzip / 超时 / 重试
+  checkin.py          米游社签到（DS2、失败分类、告警）
+tests/                离线单元测试 + fixture
+state/
+  seen_news.json      运行后生成：已见内容与兑换码
+  checkin_state.json  运行后生成：签到状态与告警阶梯
+.github/workflows/watch.yml
+```
+
+## 日志与排障
+
+日志写在 Actions 运行日志和 Job Summary 里，不提交到仓库：
+
+```
+[码] + WANZHOU1202 | 绝区零 | 未标注 | score=5
+[码] 本轮新码 1 个（候选 1 个）
+[码] 本轮未发现新兑换码（候选 0 个）
+[推送] 成功：米游社新兑换码 2026-11-21（1）
+[推送] 未配置 PUSHPLUS_TOKEN，仅记录状态（不会送达）
+[ERROR] PUSHPLUS_TOKEN 无效或已过期（code=903），请更新 Secret
+[ERROR] 兑换码搜索全部失败（可能触发 1034 或接口变更）
+[ERROR] 资讯抓取全部失败（可能网络或接口异常）
+[WARN] 本轮有 2/14 个请求失败
+```
+
+签到侧：
+
+```
+[告警] 推送成功
+[ERROR] PUSHPLUS_TOKEN 无效或已过期（code=903），告警无法送达
+[ERROR] 告警未送达，本次不推进告警阶梯，下轮重试
+```
+
+常见问题：
+
+- 没收到消息：先看 Actions 是否绿色、日志里是否有 `[推送] 成功`
+- 收到「0 码」日报：说明这一轮没有新码，不是漏推
+- 1034：人机验证，停止本轮；不要尝试绕过
+- `-1`：签名/参数失效，核对 `app_version`、盐值、`act_id`
+
+## 已知限制
+
+- **送达时间不固定**：GitHub 定时任务会延迟数小时（实测 4.7–9.5 小时），且可能丢弃；当前 cron 提前触发以换取早上送达，时间会漂移，以实际收到为准
+- **04:15 是当天唯一的资讯抓取**：这一轮被丢弃时，当天可能没有资讯日报，次日会补上（不丢数据，只延后）
+- 搜索按相关度排序、单页最多 10 条，召回有限
+- 中文码依赖「国服/国际服：」等标注，没有标注的帖子识别不到
+- 兑换码有有效期，30 天窗口内首次出现的旧码会被登记
+- Actions 机房 IP 可能触发 1034，签到上线前请先跑 `src/checkin.py --probe`
+- `app_version`、DS 盐值、`act_id` 会随客户端版本轮换
+- 单账号；Cookie 过期后需要手动更新，不做自动续期
+
 ## 安全、Fork 与免责
 
 ### Secrets 不会被 fork 带走
 
-- 本仓库的 `PUSHPLUS_TOKEN`、`CHECKIN_COOKIE` 只保存在原仓库的
-  Settings → Secrets 中，**fork 不会复制 Secrets**。
-- 本项目只使用 `schedule` 和 `workflow_dispatch` 两种触发方式，
-  不使用 `pull_request_target` 或 `workflow_run`，因此 fork 提交的 PR
-  不会读取到原仓库的 Secrets。
-  
+- `PUSHPLUS_TOKEN`、`CHECKIN_COOKIE` 只保存在原仓库的 Secrets 中，fork 不会复制
+- 本项目只使用 `schedule` 和 `workflow_dispatch`，不使用 `pull_request_target` / `workflow_run`
+- 签到默认关闭，未设置 `CHECKIN_ENABLED=true` 时不会执行
+
+### 公开仓库意味着什么
+
+- Actions 日志和 Job Summary 是公开的；代码已对 Cookie 打码，仍请不要把凭证写进任何文件
+- 状态文件只包含日期、post_id、兑换码和计数，不包含凭证
+
 ### 如果你是 fork 的使用者
 
-- 请自行配置自己的 Secrets，并自行承担账号风控、封号等风险。
-- 不要把这个项目用于批量注册、多账号刷奖励或其他违反平台条款的行为。
+- 请自行配置自己的 Secrets 和 Variables，并自行承担账号风控、封号等风险
+- 不要用于批量注册、多账号刷奖励或其他违反平台条款的行为
 
 ### 免责声明
 
-本项目仅用于个人学习与自用，按“现状”提供，不提供任何明示或暗示的担保。
-自动化操作可能违反平台服务条款，使用风险由使用者自行承担。
+本项目仅用于个人学习与自用，按「现状」提供，不提供任何明示或暗示的担保。自动化操作可能违反平台服务条款，使用风险由使用者自行承担。
+
+## License
+
+本项目暂未声明开源许可证（保留所有权利）。如需分发或商用，请先联系作者。
