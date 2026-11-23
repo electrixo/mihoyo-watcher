@@ -3,6 +3,9 @@
 > 面向接手本项目的 agent / 开发者。仓库公开，本文不含凭证、个人账号或本机路径。
 > 有冲突时以仓库里的实际代码为准。
 
+**接手先看**：[`docs/signin-protocol.md`](signin-protocol.md) —— 签到接口、凭证、错误码、变更时间线与差距表
+（2026-11-23 核对；签到协议层已知落后，当前未启用）。
+
 ## TL;DR
 
 - 只做米游社的 Python 工具：福利监测 + 兑换码提醒（只读），可选自动签到（需 Cookie）。
@@ -23,7 +26,8 @@
 ## 2. 仓库结构
 
 ```
-docs/HANDOFF.md      本文
+docs/HANDOFF.md        本文
+docs/signin-protocol.md 签到协议事实清单（接口 / 错误码 / 变更时间线）
 src/
   watch_mihoyo.py    入口：资讯 + 兑换码日报；--dry-run/--seed/--codes-only/--test-push
   mihoyo_codes.py    搜索采集 + 兑换码识别（字母数字评分、中文短语、书名号/顿号列举）
@@ -64,6 +68,9 @@ GET https://bbs-api.miyoushe.com/post/wapi/searchPosts?keyword=…&page_size=10
 - 另支持书名号、顿号列举、隐藏汇总帖纯字母码
 
 ### 3.4 签到
+
+> ⚠ 2026-11-20 米游社变更了凭证与签到路径：下面的路径 / Cookie 说明只反映**当前代码行为**，
+> 最新协议事实、错误码与差距见 [`signin-protocol.md`](signin-protocol.md)。
 
 ```
 GET  https://api-takumi.mihoyo.com/binding/api/getUserGameRolesByCookie
@@ -150,7 +157,7 @@ roles → 每个角色 info → 已签跳过 → sign → 复核 info 只取天�
 | 离线测试 | 88 个通过 |
 | 真实抓取 | 通过 |
 | pushplus 送达 | 通过 |
-| 签到 | 通过（真实运行 1m31s，绿色） |
+| 签到 | 11-20 真实运行通过（1m31s）；**当前未启用**（无 `CHECKIN_COOKIE`），协议层落后 |
 | Actions 定时 | 通过（有偏移） |
 | README | 已更新 |
 | LICENSE | 暂未声明（保留所有权利） |
@@ -206,5 +213,6 @@ python src/checkin.py
 
 - `chichengzibu/game-checkin`：失败分类、幂等、stoken 续期、Cookie V2→V1 坑
 - `qwe123456hh/mihoyo-checkin`：Actions 部署、当前可用常量、多账号 Secrets 命名
+- `Marchen-orz/MiyoQian`：11-21 的 V1→V2 凭证切换、按游戏分段的签到路径、错误码（MIT）
 
-两者均无 LICENSE，本项目为独立实现。
+前两者无 LICENSE，MiyoQian 为 MIT；本项目一律只参考协议事实与设计，不复制代码。
