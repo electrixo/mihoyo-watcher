@@ -11,6 +11,10 @@ name: 米游社福利与签到
 #   14:10 BJT 触发（UTC 06:10）       → 签到兜底（幂等）
 #   周三/五/六 22:07、22:37 BJT 触发   → 只抓码
 #
+# 2026-11-23 试验：原写法 `7,37 14 * * 3,5,6` 连续三天每天只兑现一次（1 条 watch-only 运行）。
+# 拆成两条独立 cron，验证「逗号列表被当成一个表达式、一轮只派发一次」这一可能；
+# 同时在 Job Summary 打印 github.event.schedule，确认实际是哪一条触发、两条是否都来。
+#
 # 注意：偏移量不是常数（三个样本跨度已达 1.7 小时）。若某天偏移缩小，日报会提前到凌晨。
 # 这是赌偏移稳定，不是可靠方案；要稳只能绕开调度器，改用外部 workflow_dispatch 触发。
 
@@ -19,7 +23,8 @@ on:
     - cron: "45 18 * * *"         # BJT 02:45 触发 → 只抓兑换码（不抓资讯、不签到）
     - cron: "15 20 * * *"         # BJT 04:15 触发 → 完整日报 + 签到
     - cron: "10 6 * * *"          # BJT 14:10 触发 → 签到兜底
-    - cron: "7,37 14 * * 3,5,6"   # BJT 周三/五/六 22:07、22:37 触发 → 只抓码
+    - cron: "7 14 * * 3,5,6"      # BJT 周三/五/六 22:07 触发 → 只抓码（拆分试验 A）
+    - cron: "37 14 * * 3,5,6"     # BJT 周三/五/六 22:37 触发 → 只抓码（拆分试验 B）
   workflow_dispatch:
     inputs:
       dry_run:
@@ -47,7 +52,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.schedule == '45 18 * * *' ||
       github.event.schedule == '15 20 * * *' ||
-      github.event.schedule == '7,37 14 * * 3,5,6'
+      github.event.schedule == '7 14 * * 3,5,6' ||
+      github.event.schedule == '37 14 * * 3,5,6'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -66,19 +72,24 @@ jobs:
         if: github.event_name == 'schedule'
         run: sleep $((RANDOM % 180))
 
+      # 排查用：确认这次运行由哪条 cron 触发（workflow_dispatch 时 schedule 为空）
+      - name: 记录触发来源
+        run: echo "触发 event=${{ github.event_name }} schedule=${{ github.event.schedule }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: 抓取并推送
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         # pipefail：tee 不能吞掉脚本的退出码
         run: |
           set -o pipefail
+          CRON="${{ github.event.schedule }}"
           DRY=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
           TEST=""
           if [ "${{ inputs.test_push }}" = "true" ]; then TEST="--test-push"; fi
           if [ -n "$TEST" ]; then
             python src/watch_mihoyo.py --test-push 2>&1 | tee watch.log
-          elif [ "${{ github.event.schedule }}" = "45 18 * * *" ] || [ "${{ github.event.schedule }}" = "7,37 14 * * 3,5,6" ]; then
+          elif [ "$CRON" = "45 18 * * *" ] || [ "$CRON" = "7 14 * * 3,5,6" ] || [ "$CRON" = "37 14 * * 3,5,6" ]; then
             python src/watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
           else
             python src/watch_mihoyo.py $DRY 2>&1 | tee watch.log
