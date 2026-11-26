@@ -84,24 +84,6 @@ GitHub cron 使用 UTC；下面的「北京时间」是触发时刻（实际送�
 
 也可以手动 Run workflow，勾选 `dry_run`（只抓取不推送/不写状态）或 `test_push`（只发一条测试消息）。
 
-## 目录结构
-
-```
-docs/
-  HANDOFF.md          交接/设计说明
-src/
-  watch_mihoyo.py     入口：资讯 + 兑换码日报
-  mihoyo_codes.py     搜索采集 + 兑换码识别（含中文码）
-  mihoyo_comments.py  评论区取码（默认关闭）
-  mihoyo_http.py      HTTP 公共层：gzip / 超时 / 重试
-  checkin.py          米游社签到（DS2、失败分类、告警）
-tests/                离线单元测试 + fixture
-state/
-  seen_news.json      运行后生成：已见内容与兑换码
-  checkin_state.json  运行后生成：签到状态与告警阶梯
-.github/workflows/watch.yml
-```
-
 ## 日志与排障
 
 日志写在 Actions 运行日志和 Job Summary 里，不提交到仓库：
