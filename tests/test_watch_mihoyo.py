@@ -185,6 +185,25 @@ class StateTests(unittest.TestCase):
         self.assertEqual(set(seen["posts"]), {"new"})
         self.assertEqual(set(seen["codes"]), {"NEW1"})
 
+    def test_digest_marker_roundtrip(self):
+        seen = w.empty_seen()
+        self.assertFalse(w.digest_done(seen, "2026-11-24"))
+        w.mark_digest(seen, "2026-11-24")
+        self.assertTrue(w.digest_done(seen, "2026-11-24"))
+        self.assertFalse(w.digest_done(seen, "2026-11-25"))
+        w.save_seen(seen)
+        loaded, _ = w.load_seen()
+        self.assertTrue(w.digest_done(loaded, "2026-11-24"))
+
+    def test_meta_preserved_but_not_injected_into_empty_state(self):
+        # 空状态仍不含 meta（保持首次运行/旧格式判定不变）
+        self.assertEqual(w.empty_seen(), {"posts": {}, "codes": {}})
+        seen = {"posts": {}, "codes": {}, "meta": {"last_digest_date": "2026-11-24"}}
+        w.save_seen(seen)
+        loaded, first = w.load_seen()
+        self.assertFalse(first)
+        self.assertEqual(loaded["meta"]["last_digest_date"], "2026-11-24")
+
 
 class MainTests(unittest.TestCase):
     def setUp(self):
@@ -344,6 +363,65 @@ class PushResultTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("PUSHPLUS_TOKEN", out.getvalue())
         self.assertIn("903", out.getvalue())
+
+
+class DigestBackupTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "seen.json")
+        p = mock.patch.object(w, "STATE_PATH", self.path)
+        p.start()
+        self.addCleanup(p.stop)
+        self.pushed = []
+        pp = mock.patch.object(
+            w, "push", lambda title, body: self.pushed.append((title, body)) or True
+        )
+        pp.start()
+        self.addCleanup(pp.stop)
+        self.out = StringIO()
+        self.addCleanup(self.out.close)
+
+    def run_main(self, items, argv=None):
+        with mock.patch.object(w, "collect", return_value=(items, 0, 9)), \
+                mock.patch.object(w.mihoyo_codes, "collect_codes", return_value=([], 0, 0)), \
+                redirect_stdout(self.out):
+            return w.main(argv or ["--digest-backup"])
+
+    def test_backup_skips_when_digest_already_done_today(self):
+        # 今天已出过日报 → 补抓轮直接跳过，不抓取、不推送
+        seen = {"posts": {}, "codes": {}}
+        w.mark_digest(seen, w.time.strftime("%Y-%m-%d"))
+        w.save_seen(seen)
+        code = self.run_main([item("1001")])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.pushed, [])
+        self.assertIn("已出过完整日报", self.out.getvalue())
+
+    def _seed_state(self):
+        # 建立“非首次”状态：已有 posts 但今天没标记过日报
+        w.save_seen({"posts": {"seed": "2020-01-01"}, "codes": {}})
+
+    def test_backup_runs_when_no_digest_today(self):
+        # 今天还没出日报 → 补抓轮抓资讯并推送，同时记录 last_digest_date
+        self._seed_state()
+        code = self.run_main([item("1001"), item("2001", title="签到活动开启")])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 1)
+        self.assertIn("签到活动开启", self.pushed[0][1])
+        seen, _ = w.load_seen()
+        self.assertTrue(w.digest_done(seen, w.time.strftime("%Y-%m-%d")))
+
+    def test_regular_digest_marks_date(self):
+        # 普通日报轮（非补抓、非 codes-only）成功推送后也记录日期
+        self._seed_state()
+        with mock.patch.object(w, "collect", return_value=([item("1001")], 0, 9)), \
+                mock.patch.object(w.mihoyo_codes, "collect_codes", return_value=([], 0, 0)), \
+                redirect_stdout(self.out):
+            code = w.main([])
+        self.assertEqual(code, 0)
+        seen, _ = w.load_seen()
+        self.assertTrue(w.digest_done(seen, w.time.strftime("%Y-%m-%d")))
 
 
 if __name__ == "__main__":

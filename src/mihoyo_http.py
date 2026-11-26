@@ -19,8 +19,8 @@ HEADERS = {
     "Referer": "https://www.miyoushe.com/",
 }
 
-TIMEOUT = 20
-MAX_RETRY = 2
+TIMEOUT = 10
+MAX_RETRY = 1
 
 
 def decode_body(raw, encoding):

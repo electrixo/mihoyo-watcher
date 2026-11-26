@@ -9,10 +9,12 @@
 ## TL;DR
 
 - 只做米游社的 Python 工具：福利监测 + 兑换码提醒（只读），可选自动签到（需 Cookie）。
-- 零第三方依赖，运行在 GitHub Actions；**88 个离线测试全绿**。
+- 零第三方依赖，运行在 GitHub Actions；**94 个离线测试全绿**。
 - 已验证：真实抓取、pushplus 送达、真实签到、Actions 定时运行。
-- 当前设计：**职责拆分**——02:45 只抓码、04:15 完整日报 + 签到、14:10 签到兜底、周三/五/六晚只抓码。
+- 当前设计（2026-11-26 起按「到达时刻」反推触发）：02:45 只抓码、08:10 完整日报 + 签到、
+  11:05 签到兜底且顺带补抓日报、周三/五/六晚只抓码。详见 [`digest-timing.md`](digest-timing.md)。
 - 签到默认关闭，需仓库 Variables `CHECKIN_ENABLED=true` 才执行。
+- 已补 `LICENSE`（MIT）；日报补抓门 `last_digest_date` 已实现（见第 7 节）。
 
 ## 1. 项目边界
 
@@ -28,17 +30,22 @@
 ```
 docs/HANDOFF.md        本文
 docs/signin-protocol.md 签到协议事实清单（接口 / 错误码 / 变更时间线）
+docs/digest-timing.md   日报触发时刻后移的实测依据与方案
 src/
-  watch_mihoyo.py    入口：资讯 + 兑换码日报；--dry-run/--seed/--codes-only/--test-push
-  mihoyo_codes.py    搜索采集 + 兑换码识别（字母数字评分、中文短语、书名号/顿号列举）
-  mihoyo_comments.py 评论区取码（默认关闭，MIHOYO_COMMENTS=1 才启用）
-  mihoyo_http.py     gzip/deflate、15s 超时、2 次重试
+  watch_mihoyo.py    入口：资讯 + 兑换码日报；--dry-run/--seed/--codes-only/--test-push/--digest-backup
+  mihoyo_codes.py    搜索采集 + 兑换码识别（字母数字评分、中文短语、书名号/顿号列举/隐藏码）
+  mihoyo_comments.py 评论区取码（默认关闭，MIHOYO_COMMENTS=1 才启用；接口路径待实测）
+  mihoyo_http.py     gzip/deflate、10s 超时、1 次重试
   checkin.py         签到：DS2、info 先行、失败分类、1/3/7 告警
-tests/               88 个离线用例 + fixtures；tests/__init__.py 负责把 src/ 加入 sys.path
+tests/               94 个离线用例 + fixtures；tests/__init__.py 负责把 src/ 加入 sys.path
 state/
-  seen_news.json     posts（post_id→日期）+ codes（code→meta）
+  seen_news.json     posts + codes + meta.last_digest_date（补抓门用）
   checkin_state.json last_run/last_ok/alerts
-.github/workflows/watch.yml
+.github/workflows/
+  watch.yml           主流程：抓码 / 日报 / 签到兜底+补抓
+  probe-daily.yml     探针：每天采样调度到达时刻
+  probe-hourly.yml    探针：每小时采样调度到达时刻
+LICENSE               MIT
 ```
 
 ## 3. 协议事实（2026-11 实测）
@@ -58,14 +65,16 @@ GET https://bbs-api-static.miyoushe.com/painter/wapi/getNewsList
 GET https://bbs-api.miyoushe.com/post/wapi/searchPosts?keyword=…&page_size=10
 ```
 
-默认关键词：兑换码、前瞻直播兑换码、礼包码、兑换中心、版本福利。
+默认关键词（11 个）：兑换码、前瞻直播兑换码、礼包码、兑换中心、版本福利、
+前瞻直播内容总结、前瞻总结、省流、直播总结、隐藏兑换码、兑换码汇总。
 
 ### 3.3 兑换码识别
 
 - 字母数字：评分制（形态 +1、语境 +2、前缀 +2、混合 +1、长度 +1，阈值 4）
 - 纯字母且无已知前缀直接丢弃（修复 `ENHANCEMENT` 误报）
-- 中文/英文短语：只取「国服/国际服：」标注之后的片段；中文 4–12 字、英文 3–32 位
-- 另支持书名号、顿号列举、隐藏汇总帖纯字母码
+- 中文/英文短语：取「国服/国际服：」标注之后的片段；中文 4–12 字、英文 3–32 位
+- 另支持：书名号（`兑换码①：【码】`）、顿号/无冒号列举、隐藏汇总帖纯字母码（靠强语境闸门）
+- 注意：无标注的纯文本中文码（如裸列在正文里、无任何引导词）仍抓不到；评论区码因接口未通也抓不到
 
 ### 3.4 签到
 
@@ -141,40 +150,49 @@ roles → 每个角色 info → 已签跳过 → sign → 复核 info 只取天�
 | 声明 BJT | UTC cron | 内容 | 推送 |
 |---|---|---|---|
 | 02:45 | `45 18 * * *` | 只抓码，不抓资讯、不签到 | 新码 |
-| 04:15 | `15 20 * * *` | 完整日报 + 签到 | 日报 / 签到失败告警 |
-| 14:10 | `10 6 * * *` | 签到兜底 | 失败告警 |
-| 周三/五/六 22:07、22:37 | `7,37 14 * * 3,5,6` | 只抓码 | 新码 |
+| 08:10 | `10 0 * * *` | 完整日报 + 签到 | 日报 / 签到失败告警 |
+| 11:05 | `5 3 * * *` | 签到兜底 + 日报补抓（`--digest-backup`）| 失败告警 / 补抓的日报 |
+| 周三/五/六 22:07、22:37 | `7 14 * * 3,5,6` / `37 14 * * 3,5,6` | 只抓码（拆两条独立 cron 做对照）| 新码 |
 
-- GitHub cron 是 UTC；实测会延迟数小时（4.7–9.5h）才创建运行，因此 cron 提前触发
+- GitHub cron 是 UTC；实测会延迟 4h07–11h46（均值约 7h40）才创建运行，因此按「到达时刻」反推触发
 - 送达时间会漂移，用户已接受；不要为了对齐时间继续调偏移
-- 已知弱点：04:15 是当天唯一资讯抓取；被丢弃则当天无日报，次日补上
+- 日报补抓门：08:10 日报轮成功后写 `meta.last_digest_date`；11:05 轮用 `--digest-backup`
+  检查，当天已出日报则跳过，否则补抓一次。解决 08:10 被丢弃时当天无资讯。
 
 ## 6. 当前状态
 
 | 项 | 状态 |
 |---|---|
 | 代码 | 完成 |
-| 离线测试 | 88 个通过 |
+| 离线测试 | 94 个通过 |
 | 真实抓取 | 通过 |
 | pushplus 送达 | 通过 |
 | 签到 | 11-20 真实运行通过（1m31s）；**当前未启用**（无 `CHECKIN_COOKIE`），协议层落后 |
 | Actions 定时 | 通过（有偏移） |
+| 日报补抓门 | 已实现（`last_digest_date` + `--digest-backup`）|
+| HTTP 调优 | 已做（TIMEOUT 10 / MAX_RETRY 1）|
 | README | 已更新 |
-| LICENSE | 暂未声明（保留所有权利） |
+| LICENSE | 已补（MIT）|
 
 ## 7. 待办
 
-1. 许可证暂不处理；如果以后要开源分发，再补 `LICENSE`（MIT）。
-2. 可选：给 14:10 增加「当天未出日报则补一次」的状态门（`last_digest_date`），解决 04:15 被丢弃时当天无资讯。
-3. watch 单轮约 3 分钟，偏慢；可把 `mihoyo_http.py` 的 `TIMEOUT` 20→10、`MAX_RETRY` 2→1。
-4. 可选：评论区取码实测后再决定是否默认开启（当前 `MIHOYO_COMMENTS=1` 才启用）。
+1. [x] 补 `LICENSE`（MIT）——已完成。
+2. [x] 日报补抓门 `last_digest_date`——已完成：08:10 日报轮成功后记日期，11:05 轮用
+   `--digest-backup` 检查，当天已出则跳过、否则补抓。解决 08:10 被丢弃时当天无资讯。
+3. [x] HTTP 调优——已完成：`mihoyo_http.py` 的 `TIMEOUT` 20→10、`MAX_RETRY` 2→1。
+4. [x] 评论区取码——实测结论：加 DS2 签名后候选路径仍全部 404，接口路径/salt 未经真机验证，
+   **保持默认关闭**（`MIHOYO_COMMENTS=1` 才启用）。模块代码完整、有降级，待接口确认后可启用。
+5. [ ] 签到协议升级（唯一剩余）：原神/星铁改按游戏分段路径、V2 凭证优先、补 `-464`/`1002`/`-500001`
+   错误码分类。当前签到未启用，详见 [`signin-protocol.md`](signin-protocol.md) 第 7 节。
+6. [ ] 覆盖 18:00 发布的资讯（约 24%）：需再增加一轮晚间资讯抓取，属独立任务，见 `digest-timing.md` 第 10 节。
 
 ## 8. 注意事项
 
 1. cron 是 UTC，且可能延迟/丢弃；不要依赖准点。
 2. 整点最拥堵，用 `:07`、`:10`、`:30`、`:37`。
 3. 资讯/搜索必须带 gzip 头，否则 1034。
-4. 中文码依赖「国服/国际服：」标注。
+4. 中文码主要靠「国服/国际服：」标注，也支持书名号/顿号/无冒号列举与强语境隐藏码；
+   完全无标注的裸中文列举仍抓不到。
 5. 搜索按相关度排序、单页 10 条，召回有限。
 6. `APP_VERSION`/盐值/`act_id` 会轮换；`-1` 时先核对。
 7. Cookie 静态、不自动续期。
@@ -201,13 +219,13 @@ python src/checkin.py
 
 ## 10. 验收
 
-- [ ] 88 个离线测试通过
-- [ ] `--dry-run` 能预览且不写状态
-- [ ] 配置 token 后能收到 pushplus
-- [ ] `src/checkin.py --probe` 无 1034
-- [ ] Actions 手动/定时运行绿色，Job Summary 有内容
-- [ ] 仓库无凭证/个人/公司信息
-- [ ] README 与 LICENSE 完整
+- [x] 94 个离线测试通过
+- [x] `--dry-run` 能预览且不写状态
+- [x] 配置 token 后能收到 pushplus
+- [x] `src/checkin.py --probe` 无 1034
+- [x] Actions 手动/定时运行绿色，Job Summary 有内容
+- [x] 仓库无凭证/个人/公司信息
+- [x] README 与 LICENSE 完整
 
 ## 11. 参考实现
 

@@ -131,7 +131,11 @@ def empty_seen():
 
 
 def load_seen():
-    """返回 (seen, 是否首次)。兼容旧格式（扁平 {post_id: 日期}）。"""
+    """返回 (seen, 是否首次)。兼容旧格式（扁平 {post_id: 日期}）。
+
+    meta 段（如 last_digest_date）按需保留：存在才带出，不主动注入空状态，
+    以保持旧状态格式与首次运行判定的行为不变。
+    """
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -143,11 +147,24 @@ def load_seen():
                     code: (meta if isinstance(meta, dict) else {"first_seen": str(meta or "")})
                     for code, meta in raw_codes.items()
                 }
-                return {"posts": posts, "codes": codes}, False
+                seen = {"posts": posts, "codes": codes}
+                if isinstance(data.get("meta"), dict):
+                    seen["meta"] = dict(data["meta"])
+                return seen, False
             return {"posts": dict(data), "codes": {}}, False
     except Exception:
         pass
     return empty_seen(), True
+
+
+def digest_done(seen, today):
+    """今天是否已成功跑过完整日报（用于补抓门去重）。"""
+    return ((seen.get("meta") or {}).get("last_digest_date") == today)
+
+
+def mark_digest(seen, today):
+    """标记今天已出日报。"""
+    seen.setdefault("meta", {})["last_digest_date"] = today
 
 
 def save_seen(seen):
@@ -276,6 +293,7 @@ def main(argv):
     force_seed = "--seed" in argv
     codes_only = "--codes-only" in argv
     test_push = "--test-push" in argv
+    digest_backup = "--digest-backup" in argv
     page_size = PAGE_SIZE
     if "--page-size" in argv:
         try:
@@ -326,6 +344,13 @@ def main(argv):
             log(f"[WARN] 评论区取码跳过：{type(e).__name__}: {e}")
 
     seen, first_run = load_seen()
+
+    # 补抓门：--digest-backup 轮次仅在「今天还没出过完整日报」时才抓资讯推送，
+    # 避免 08:10 日报轮被 GitHub 丢弃后当天无日报，又避免重复推送。
+    if digest_backup and digest_done(seen, today):
+        log(f"[补抓] 今天（{today}）已出过完整日报，本轮跳过")
+        return 0
+
     new_items, push_items = select_new(items, seen)
     new_hits = select_new_codes(code_hits, seen)
 
@@ -352,6 +377,9 @@ def main(argv):
         log(f"[码] 本轮未发现新兑换码（候选 {len(code_hits)} 个）")
 
     if not new_items and not new_hits:
+        if not dry and not codes_only:
+            mark_digest(seen, today)
+            save_seen(seen)
         log("本轮无新增内容")
         return 0 if failures < total else 1
 
@@ -359,6 +387,8 @@ def main(argv):
         # 新帖都不命中关键词：静默登记，不打扰
         mark_seen(seen, new_items, new_hits, today)
         if not dry:
+            if not codes_only:
+                mark_digest(seen, today)
             prune_seen(seen)
             save_seen(seen)
         log(f"新增 {len(new_items)} 条，未命中福利关键词且无兑换码，不推送")
@@ -384,6 +414,9 @@ def main(argv):
         log(f"[推送] 成功：{title}")
 
     mark_seen(seen, new_items, new_hits, today)
+    # 完整日报（非 codes-only）成功推送后记录日期，供补抓门去重
+    if not codes_only:
+        mark_digest(seen, today)
     prune_seen(seen)
     save_seen(seen)
     return 0 if failures < total else 1

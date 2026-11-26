@@ -96,18 +96,20 @@ class WorkflowContractTests(unittest.TestCase):
             "签到 job 必须在 CHECKIN_ENABLED=true 时才运行，避免未配置时天天告警",
         )
 
-    def test_checkin_backup_must_not_trigger_the_digest_job(self):
-        self.assertNotIn(
-            CHECKIN_BACKUP, self.watch,
-            "签到兜底不应该触发 watch job（日报只由 DIGEST 与只抓码 cron 触发）",
-        )
+    def test_checkin_backup_triggers_digest_backup(self):
+        # 11:05 兜底轮兼做日报补抓：watch job 用 --digest-backup 模式（内部按 last_digest_date 门控），
+        # 保证 08:10 日报轮被丢弃时当天仍有资讯；checkin job 照常签到。
+        self.assertIn(CHECKIN_BACKUP, self.watch)
         self.assertIn(CHECKIN_BACKUP, self.checkin)
+        self.assertIn(
+            "--digest-backup", self.watch,
+            "兜底轮触发的 watch job 必须走 --digest-backup 补抓模式",
+        )
 
-    def test_watch_job_handles_codes_digest_and_forward_look(self):
-        for cron in (CODES_NIGHT, DIGEST, FORWARD_LOOK_A, FORWARD_LOOK_B):
+    def test_watch_job_handles_codes_digest_backup_and_forward_look(self):
+        for cron in (CODES_NIGHT, DIGEST, CHECKIN_BACKUP, FORWARD_LOOK_A, FORWARD_LOOK_B):
             with self.subTest(cron=cron):
                 self.assertIn(cron, self.watch, f"`{cron}` 没有触发 watch job")
-        self.assertNotIn(CHECKIN_BACKUP, self.watch)
 
     def test_checkin_runs_on_digest_and_backup_only(self):
         # 02:45 只抓码；签到只在 08:10 日报与 11:05 兜底运行

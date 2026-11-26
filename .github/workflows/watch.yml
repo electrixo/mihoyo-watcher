@@ -48,6 +48,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.schedule == '45 18 * * *' ||
       github.event.schedule == '10 0 * * *' ||
+      github.event.schedule == '5 3 * * *' ||
       github.event.schedule == '7 14 * * 3,5,6' ||
       github.event.schedule == '37 14 * * 3,5,6'
     runs-on: ubuntu-latest
@@ -87,6 +88,9 @@ jobs:
             python src/watch_mihoyo.py --test-push 2>&1 | tee watch.log
           elif [ "$CRON" = "45 18 * * *" ] || [ "$CRON" = "7 14 * * 3,5,6" ] || [ "$CRON" = "37 14 * * 3,5,6" ]; then
             python src/watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
+          elif [ "$CRON" = "5 3 * * *" ]; then
+            # 签到兜底轮顺带补抓日报：当天 08:10 日报轮若被 GitHub 丢弃，这里补一次；已出则脚本内自动跳过
+            python src/watch_mihoyo.py --digest-backup $DRY 2>&1 | tee watch.log
           else
             python src/watch_mihoyo.py $DRY 2>&1 | tee watch.log
           fi
