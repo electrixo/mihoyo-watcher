@@ -20,17 +20,17 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parent.parent / ".github" / "workflows" / "watch.yml"
 )
 
-# 设计意图：五条调度，职责拆分
-#   CODES_NIGHT    02:45 BJT → 只抓码（不抓资讯、不签到）
-#   DIGEST         04:15 BJT → 完整日报 + 签到
-#   CHECKIN_BACKUP 14:10 BJT → 签到兜底
-#   FORWARD_LOOK_A 周三/五/六 22:07 → 只抓码
-#   FORWARD_LOOK_B 周三/五/六 22:37 → 只抓码
+# 设计意图：五条调度，职责拆分（2026-11-26 起按「到达时刻」反推）
+#   CODES_NIGHT    02:45 BJT 触发 → 到达 07:36–12:05，只抓码（不抓资讯、不签到）
+#   DIGEST         08:10 BJT 触发 → 到达 12:17–16:44，完整日报 + 签到
+#   CHECKIN_BACKUP 11:05 BJT 触发 → 到达 19:22–22:51，签到兜底
+#   FORWARD_LOOK_A 周三/五/六 22:07 → 到达次日 04:27–07:16，只抓码
+#   FORWARD_LOOK_B 周三/五/六 22:37 → 同上，只抓码
 # 原先是 `7,37 14 * * 3,5,6` 一条，2026-11-23 拆成两条独立 cron 做试验。
 # cron 是 UTC；实测 GitHub 会延迟数小时才创建运行，注释里是触发时刻。
 CODES_NIGHT = "45 18 * * *"
-DIGEST = "15 20 * * *"
-CHECKIN_BACKUP = "10 6 * * *"
+DIGEST = "10 0 * * *"
+CHECKIN_BACKUP = "5 3 * * *"
 FORWARD_LOOK_A = "7 14 * * 3,5,6"
 FORWARD_LOOK_B = "37 14 * * 3,5,6"
 CODES_ONLY_CRONS = {CODES_NIGHT, FORWARD_LOOK_A, FORWARD_LOOK_B}
@@ -110,7 +110,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn(CHECKIN_BACKUP, self.watch)
 
     def test_checkin_runs_on_digest_and_backup_only(self):
-        # 02:45 只抓码；签到只在 04:15 日报与 14:10 兜底运行
+        # 02:45 只抓码；签到只在 08:10 日报与 11:05 兜底运行
         self.assertIn(DIGEST, self.checkin)
         self.assertIn(CHECKIN_BACKUP, self.checkin)
         self.assertNotIn(CODES_NIGHT, self.checkin)
