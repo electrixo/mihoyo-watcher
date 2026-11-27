@@ -61,17 +61,7 @@ GitHub Actions 定时触发
 
 Cookie 获取：浏览器登录米游社 → 开发者工具 → 任意请求的 Cookie 头，复制完整值。它等价于登录凭证，只放 Secrets。
 
-### 3. 配置 Variables（签到开关）
-
-同一页面 → **Variables** → New repository variable：
-
-| Name | Value |
-|---|---|
-| `CHECKIN_ENABLED` | `true` |
-
-不设置时，签到 job 会直接跳过：不执行、不消耗时间、不发任何签到告警。
-
-### 4. 定时任务
+### 定时任务
 
 GitHub 的定时派发不可控：实测延迟 4~11 小时，且一天只兑现少数几次（约 2% 的触发点）。
 所以 cron 改成**每 30 分钟一个点**（被丢弃的点不产生任何请求），实际兑现约 4~5 次/天；
