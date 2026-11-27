@@ -9,6 +9,11 @@
     GET /painter/wapi/getNewsList?client_type=4&gids=<2|6|8>&page_size=N&type=<1公告|2活动|3资讯>
     GET https://bbs-api.miyoushe.com/post/wapi/searchPosts?keyword=…&page_size=10
 
+推送节奏（2026-11-27 起）：
+    GitHub 定时派发一天只兑现少数几次且时刻随机，所以 cron 改成密打（每 30 分钟），
+    由本脚本按「北京时间分槽」去重：早报 00-12 / 午报 12-18 / 晚报 18-24，
+    每槽每天最多推一条日报；新兑换码不受槽限制，随时推。
+
 风控要点：
     * 必须带 Accept-Encoding: gzip, deflate 并手动解压，否则会被判 1034
     * 请求之间留间隔；单源失败只降级
@@ -133,7 +138,7 @@ def empty_seen():
 def load_seen():
     """返回 (seen, 是否首次)。兼容旧格式（扁平 {post_id: 日期}）。
 
-    meta 段（如 last_digest_date）按需保留：存在才带出，不主动注入空状态，
+    未知字段（如历史遗留的 meta）按需保留：存在才带出，不主动注入空状态，
     以保持旧状态格式与首次运行判定的行为不变。
     """
     try:
@@ -150,6 +155,8 @@ def load_seen():
                 seen = {"posts": posts, "codes": codes}
                 if isinstance(data.get("meta"), dict):
                     seen["meta"] = dict(data["meta"])
+                if isinstance(data.get("slots"), dict):
+                    seen["slots"] = dict(data["slots"])
                 return seen, False
             return {"posts": dict(data), "codes": {}}, False
     except Exception:
@@ -157,14 +164,22 @@ def load_seen():
     return empty_seen(), True
 
 
-def digest_done(seen, today):
-    """今天是否已成功跑过完整日报（用于补抓门去重）。"""
-    return ((seen.get("meta") or {}).get("last_digest_date") == today)
+# 每轮兑现只推一个槽：同槽同日推过就静默，避免 48 点密打下重复轰炸。
+# 窗口按北京时间切，对应米游社的发布节奏（12:00 约 53%、18:00 约 24%）。
+SLOT_WINDOWS = (
+    ("morning", 0, 12, "早报"),
+    ("noon", 12, 18, "午报"),
+    ("evening", 18, 24, "晚报"),
+)
 
 
-def mark_digest(seen, today):
-    """标记今天已出日报。"""
-    seen.setdefault("meta", {})["last_digest_date"] = today
+def current_slot(hour=None):
+    """返回 (slot, 中文标签)。hour 便于单测注入，默认取本地（TZ=Asia/Shanghai）。"""
+    h = time.localtime().tm_hour if hour is None else hour
+    for slot, start, end, label in SLOT_WINDOWS:
+        if start <= h < end:
+            return slot, label
+    return "evening", "晚报"
 
 
 def save_seen(seen):
@@ -210,8 +225,12 @@ def select_new_codes(hits, seen):
     return [h for h in hits if h["code"] not in seen["codes"]]
 
 
-def mark_seen(seen, new_items, new_hits, today):
+def mark_seen(seen, new_items, new_hits, today, keep_posts=None):
+    """登记本轮状态。keep_posts 里的帖子不登记，留给下一槽再推。"""
+    keep = set(keep_posts or ())
     for item in new_items:
+        if item["post_id"] in keep:
+            continue
         seen["posts"][item["post_id"]] = today
     for hit in new_hits:
         seen["codes"][hit["code"]] = {
@@ -293,7 +312,6 @@ def main(argv):
     force_seed = "--seed" in argv
     codes_only = "--codes-only" in argv
     test_push = "--test-push" in argv
-    digest_backup = "--digest-backup" in argv
     page_size = PAGE_SIZE
     if "--page-size" in argv:
         try:
@@ -344,13 +362,10 @@ def main(argv):
             log(f"[WARN] 评论区取码跳过：{type(e).__name__}: {e}")
 
     seen, first_run = load_seen()
-
-    # 补抓门：--digest-backup 轮次仅在「今天还没出过完整日报」时才抓资讯推送，
-    # 避免 08:10 日报轮被 GitHub 丢弃后当天无日报，又避免重复推送。
-    if digest_backup and digest_done(seen, today):
-        log(f"[补抓] 今天（{today}）已出过完整日报，本轮跳过")
-        return 0
-
+    slots = seen.setdefault("slots", {})
+    slot, slot_label = current_slot()
+    slot_done = slots.get(slot) == today
+    log(f"[槽] {slot_label}（{slot}）今天已推送={slot_done}")
     new_items, push_items = select_new(items, seen)
     new_hits = select_new_codes(code_hits, seen)
 
@@ -377,9 +392,6 @@ def main(argv):
         log(f"[码] 本轮未发现新兑换码（候选 {len(code_hits)} 个）")
 
     if not new_items and not new_hits:
-        if not dry and not codes_only:
-            mark_digest(seen, today)
-            save_seen(seen)
         log("本轮无新增内容")
         return 0 if failures < total else 1
 
@@ -387,21 +399,34 @@ def main(argv):
         # 新帖都不命中关键词：静默登记，不打扰
         mark_seen(seen, new_items, new_hits, today)
         if not dry:
-            if not codes_only:
-                mark_digest(seen, today)
             prune_seen(seen)
             save_seen(seen)
         log(f"新增 {len(new_items)} 条，未命中福利关键词且无兑换码，不推送")
         return 0 if failures < total else 1
 
-    body = render(push_items, new_hits, today)
-    if codes_only:
-        title = f"米游社新兑换码 {today}（{len(new_hits)}）"
+    # 密打下每轮都可能被兑现：日报只在「本槽今天还没推」时发，码随时推。
+    push_digest = bool(push_items) and not slot_done
+    if not push_digest and not new_hits:
+        # 本槽已推：可推的资讯不登记（留给下一槽），只登记不推送的帖子，避免永久漏推
+        log(f"[槽] {slot_label}今天已推送，{len(push_items)} 条资讯留到下一槽")
+        mark_seen(seen, new_items, [], today,
+                  keep_posts=[i["post_id"] for i in push_items])
+        if not dry:
+            prune_seen(seen)
+            save_seen(seen)
+        return 0 if failures < total else 1
+
+    if push_digest:
+        body = render(push_items, new_hits, today)
+        title = (f"米游社福利日报 {today}"
+                 f"（{slot_label} · {len(new_hits)} 码 / {len(push_items)} 条福利）")
     else:
-        title = f"米游社福利日报 {today}（{len(new_hits)} 码 / {len(push_items)} 条福利）"
+        body = render([], new_hits, today)
+        title = f"米游社新兑换码 {today}（{len(new_hits)}）"
     print(body)
 
     if dry:
+        log(f"dry-run 槽={slot}({slot_label})，不推送、不写状态")
         return 0
 
     result = push(title, body)
@@ -413,10 +438,13 @@ def main(argv):
     else:
         log(f"[推送] 成功：{title}")
 
-    mark_seen(seen, new_items, new_hits, today)
-    # 完整日报（非 codes-only）成功推送后记录日期，供补抓门去重
-    if not codes_only:
-        mark_digest(seen, today)
+    if push_digest:
+        mark_seen(seen, new_items, new_hits, today)
+        slots[slot] = today
+    else:
+        # 只推了新码：资讯仍留给下一槽
+        mark_seen(seen, new_items, new_hits, today,
+                  keep_posts=[i["post_id"] for i in push_items])
     prune_seen(seen)
     save_seen(seen)
     return 0 if failures < total else 1

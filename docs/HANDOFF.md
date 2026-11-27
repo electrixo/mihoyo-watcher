@@ -11,10 +11,10 @@
 - 只做米游社的 Python 工具：福利监测 + 兑换码提醒（只读），可选自动签到（需 Cookie）。
 - 零第三方依赖，运行在 GitHub Actions；**94 个离线测试全绿**。
 - 已验证：真实抓取、pushplus 送达、真实签到、Actions 定时运行。
-- 当前设计（2026-11-26 起按「到达时刻」反推触发）：02:45 只抓码、08:10 完整日报 + 签到、
-  11:05 签到兜底且顺带补抓日报、周三/五/六晚只抓码。详见 [`digest-timing.md`](digest-timing.md)。
+- 当前设计（2026-11-27 起「密打 + 分槽」）：单条 `7,37 * * * *`（48 点/天，实际兑现 4~5 次），
+  脚本按北京时间早/午/晚报分槽去重。详见 [`slots-dispatch.md`](slots-dispatch.md)。
 - 签到默认关闭，需仓库 Variables `CHECKIN_ENABLED=true` 才执行。
-- 已补 `LICENSE`（MIT）；日报补抓门 `last_digest_date` 已实现（见第 7 节）。
+- 已补 `LICENSE`（MIT）；推送去重由状态里的 `slots` 承担（见第 5 节）。
 
 ## 1. 项目边界
 
@@ -30,21 +30,21 @@
 ```
 docs/HANDOFF.md        本文
 docs/signin-protocol.md 签到协议事实清单（接口 / 错误码 / 变更时间线）
-docs/digest-timing.md   日报触发时刻后移的实测依据与方案
+docs/slots-dispatch.md  调度方案：密打 + 分槽（现行）
+docs/schedule-drift.md  历史偏移实测
+docs/digest-timing.md   已作废的反推方案（存档）
 src/
-  watch_mihoyo.py    入口：资讯 + 兑换码日报；--dry-run/--seed/--codes-only/--test-push/--digest-backup
+  watch_mihoyo.py    入口：资讯 + 兑换码日报；--dry-run/--seed/--codes-only/--test-push
   mihoyo_codes.py    搜索采集 + 兑换码识别（字母数字评分、中文短语、书名号/顿号列举/隐藏码）
   mihoyo_comments.py 评论区取码（默认关闭，MIHOYO_COMMENTS=1 才启用；接口路径待实测）
   mihoyo_http.py     gzip/deflate、10s 超时、1 次重试
   checkin.py         签到：DS2、info 先行、失败分类、1/3/7 告警
 tests/               94 个离线用例 + fixtures；tests/__init__.py 负责把 src/ 加入 sys.path
 state/
-  seen_news.json     posts + codes + meta.last_digest_date（补抓门用）
+  seen_news.json     posts + codes + slots（早/午/晚报最后推送日期）
   checkin_state.json last_run/last_ok/alerts
 .github/workflows/
-  watch.yml           主流程：抓码 / 日报 / 签到兜底+补抓
-  probe-daily.yml     探针：每天采样调度到达时刻
-  probe-hourly.yml    探针：每小时采样调度到达时刻
+  watch.yml           主流程：密打 cron，每轮跑完整流程
 LICENSE               MIT
 ```
 
@@ -147,17 +147,18 @@ roles → 每个角色 info → 已签跳过 → sign → 复核 info 只取天�
 
 ## 5. 定时
 
-| 声明 BJT | UTC cron | 内容 | 推送 |
-|---|---|---|---|
-| 02:45 | `45 18 * * *` | 只抓码，不抓资讯、不签到 | 新码 |
-| 08:10 | `10 0 * * *` | 完整日报 + 签到 | 日报 / 签到失败告警 |
-| 11:05 | `5 3 * * *` | 签到兜底 + 日报补抓（`--digest-backup`）| 失败告警 / 补抓的日报 |
-| 周三/五/六 22:07、22:37 | `7 14 * * 3,5,6` / `37 14 * * 3,5,6` | 只抓码（拆两条独立 cron 做对照）| 新码 |
+| 项 | 值 |
+|---|---|
+| cron | `7,37 * * * *`（每 30 分钟一个点，一天 48 点） |
+| 实际兑现 | 约 4~5 次/天（GitHub 只派发少数触发点，约 2%） |
+| 每轮内容 | 抓资讯 + 抓码 + 签到（签到幂等；未启用则跳过） |
+| 推送去重 | 早报 00–12 / 午报 12–18 / 晚报 18–24，每槽每天最多一条日报 |
+| 新码 | 不受槽限制，随时推 |
 
-- GitHub cron 是 UTC；实测会延迟 4h07–11h46（均值约 7h40）才创建运行，因此按「到达时刻」反推触发
-- 送达时间会漂移，用户已接受；不要为了对齐时间继续调偏移
-- 日报补抓门：08:10 日报轮成功后写 `meta.last_digest_date`；11:05 轮用 `--digest-backup`
-  检查，当天已出日报则跳过，否则补抓一次。解决 08:10 被丢弃时当天无资讯。
+- 实测派发延迟 4h07–11h46，且**派发本身随机**：24 小时内 19 个触发只兑现 1 次
+- 所以不再反推触发时刻（前提不成立），改用密度换覆盖；被丢弃的触发点不产生请求
+- 某槽当天无兑现时，资讯并入下一槽的日报，不丢数据
+- 真要准点只能换外部触发（国内云主机 + `workflow_dispatch`）
 
 ## 6. 当前状态
 
@@ -168,8 +169,8 @@ roles → 每个角色 info → 已签跳过 → sign → 复核 info 只取天�
 | 真实抓取 | 通过 |
 | pushplus 送达 | 通过 |
 | 签到 | 11-20 真实运行通过（1m31s）；**当前未启用**（无 `CHECKIN_COOKIE`），协议层落后 |
-| Actions 定时 | 通过（有偏移） |
-| 日报补抓门 | 已实现（`last_digest_date` + `--digest-backup`）|
+| Actions 定时 | 密打 + 分槽去重（2026-11-27 起，观察中） |
+| 推送去重 | 已实现（`slots` 早/午/晚三槽）|
 | HTTP 调优 | 已做（TIMEOUT 10 / MAX_RETRY 1）|
 | README | 已更新 |
 | LICENSE | 已补（MIT）|
@@ -177,18 +178,17 @@ roles → 每个角色 info → 已签跳过 → sign → 复核 info 只取天�
 ## 7. 待办
 
 1. [x] 补 `LICENSE`（MIT）——已完成。
-2. [x] 日报补抓门 `last_digest_date`——已完成：08:10 日报轮成功后记日期，11:05 轮用
-   `--digest-backup` 检查，当天已出则跳过、否则补抓。解决 08:10 被丢弃时当天无资讯。
+2. [x] 推送去重——已完成：密打下按早/午/晚三槽去重，同槽同日只推一条日报（替代原 `last_digest_date` 补抓门）。
 3. [x] HTTP 调优——已完成：`mihoyo_http.py` 的 `TIMEOUT` 20→10、`MAX_RETRY` 2→1。
 4. [x] 评论区取码——实测结论：加 DS2 签名后候选路径仍全部 404，接口路径/salt 未经真机验证，
    **保持默认关闭**（`MIHOYO_COMMENTS=1` 才启用）。模块代码完整、有降级，待接口确认后可启用。
 5. [ ] 签到协议升级（唯一剩余）：原神/星铁改按游戏分段路径、V2 凭证优先、补 `-464`/`1002`/`-500001`
    错误码分类。当前签到未启用，详见 [`signin-protocol.md`](signin-protocol.md) 第 7 节。
-6. [ ] 覆盖 18:00 发布的资讯（约 24%）：需再增加一轮晚间资讯抓取，属独立任务，见 `digest-timing.md` 第 10 节。
+6. [x] 覆盖 18:00 发布的资讯（约 24%）：密打后由晚报槽（18–24）覆盖，但依赖当天该时段有兑现。
 
 ## 8. 注意事项
 
-1. cron 是 UTC，且可能延迟/丢弃；不要依赖准点。
+1. cron 是 UTC；延迟 4~12 小时、派发率约 2% 是常态。按「能收到」设计，不按准点设计。
 2. 整点最拥堵，用 `:07`、`:10`、`:30`、`:37`。
 3. 资讯/搜索必须带 gzip 头，否则 1034。
 4. 中文码主要靠「国服/国际服：」标注，也支持书名号/顿号/无冒号列举与强语境隐藏码；

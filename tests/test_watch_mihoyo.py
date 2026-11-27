@@ -185,24 +185,14 @@ class StateTests(unittest.TestCase):
         self.assertEqual(set(seen["posts"]), {"new"})
         self.assertEqual(set(seen["codes"]), {"NEW1"})
 
-    def test_digest_marker_roundtrip(self):
-        seen = w.empty_seen()
-        self.assertFalse(w.digest_done(seen, "2026-11-24"))
-        w.mark_digest(seen, "2026-11-24")
-        self.assertTrue(w.digest_done(seen, "2026-11-24"))
-        self.assertFalse(w.digest_done(seen, "2026-11-25"))
-        w.save_seen(seen)
-        loaded, _ = w.load_seen()
-        self.assertTrue(w.digest_done(loaded, "2026-11-24"))
-
     def test_meta_preserved_but_not_injected_into_empty_state(self):
         # 空状态仍不含 meta（保持首次运行/旧格式判定不变）
         self.assertEqual(w.empty_seen(), {"posts": {}, "codes": {}})
-        seen = {"posts": {}, "codes": {}, "meta": {"last_digest_date": "2026-11-24"}}
+        seen = {"posts": {}, "codes": {}, "meta": {"legacy": "2026-11-24"}}
         w.save_seen(seen)
         loaded, first = w.load_seen()
         self.assertFalse(first)
-        self.assertEqual(loaded["meta"]["last_digest_date"], "2026-11-24")
+        self.assertEqual(loaded["meta"]["legacy"], "2026-11-24")
 
 
 class MainTests(unittest.TestCase):
@@ -219,6 +209,11 @@ class MainTests(unittest.TestCase):
         )
         push_patch.start()
         self.addCleanup(push_patch.stop)
+        # 固定槽位，避免测试结果随本机时间漂移
+        slot_patch = mock.patch.object(
+            w, "current_slot", lambda hour=None: ("noon", "午报"))
+        slot_patch.start()
+        self.addCleanup(slot_patch.stop)
         self.out = StringIO()
         self.addCleanup(self.out.close)
 
@@ -340,6 +335,66 @@ class MainTests(unittest.TestCase):
         self.assertEqual(self.pushed, [])
         self.assertIn("本轮未发现新兑换码", self.out.getvalue())
 
+    # ---- 槽位去重（密打方案的核心） ------------------------------------
+
+    def test_same_slot_pushes_only_once_per_day(self):
+        self.run_main([item("1001")])                     # seed
+        self.out = StringIO()
+        self.run_main([item("1001"), item("2001")])       # 首轮：推午报
+        self.assertEqual(len(self.pushed), 1)
+        self.out = StringIO()
+        code = self.run_main([item("1001"), item("2001"), item("3001")])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 1)             # 同槽不再推
+        self.assertIn("已推送", self.out.getvalue())
+        seen, _ = w.load_seen()
+        self.assertNotIn("3001", seen["posts"])           # 留到下一槽，避免漏推
+        self.assertEqual(seen["slots"]["noon"], w.time.strftime("%Y-%m-%d"))
+
+    def test_kept_posts_are_pushed_next_slot(self):
+        self.run_main([item("1001")])                     # seed
+        self.run_main([item("1001"), item("2001")])       # 午报
+        self.out = StringIO()
+        self.run_main([item("1001"), item("2001"), item("2002", typ=2, title="午报之后的新帖")])
+        self.assertEqual(len(self.pushed), 1)             # 同槽静默
+        # 下一槽（晚报）：上槽保留的资讯要补推
+        with mock.patch.object(w, "current_slot", lambda hour=None: ("evening", "晚报")):
+            self.out = StringIO()
+            code = self.run_main([item("1001"), item("2001"), item("2002", typ=2, title="午报之后的新帖")])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 2)
+        self.assertIn("午报之后的新帖", self.pushed[-1][1])
+        self.assertIn("晚报", self.pushed[-1][0])
+
+    def test_code_push_keeps_posts_for_next_slot(self):
+        self.run_main([item("1001")])                                  # seed
+        self.run_main([item("1001"), item("2001")])                    # 午报
+        self.out = StringIO()
+        self.run_main([item("1001"), item("2001"), item("2002", typ=2, title="码轮新帖")],
+                      codes=([hit()], 0, 5))                           # 同槽，只推码
+        self.assertIn("新兑换码", self.pushed[-1][0])
+        with mock.patch.object(w, "current_slot", lambda hour=None: ("evening", "晚报")):
+            self.out = StringIO()
+            self.run_main([item("1001"), item("2001"), item("2002", typ=2, title="码轮新帖")])
+        self.assertIn("码轮新帖", self.pushed[-1][1])                  # 资讯没被吞
+
+    def test_slot_resets_on_new_day(self):
+        # 预置「昨天已推过」的槽，今天应重新推送
+        w.save_seen({"posts": {"seed": "2000-01-01"}, "codes": {},
+                     "slots": {"noon": "2000-01-01"}})
+        code = self.run_main([item("1001"), item("2001")])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 1)
+
+    def test_new_code_still_pushed_after_slot_done(self):
+        self.run_main([item("1001")])
+        self.run_main([item("1001"), item("2001")])       # 午报已推
+        self.out = StringIO()
+        code = self.run_main([item("1001"), item("2001")], codes=([hit()], 0, 5))
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.pushed), 2)             # 日报 + 新码
+        self.assertIn("新兑换码", self.pushed[-1][0])
+
 
 class PushResultTests(unittest.TestCase):
     def test_token_invalid_logs_error(self):
@@ -365,63 +420,16 @@ class PushResultTests(unittest.TestCase):
         self.assertIn("903", out.getvalue())
 
 
-class DigestBackupTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.path = os.path.join(self._tmp.name, "seen.json")
-        p = mock.patch.object(w, "STATE_PATH", self.path)
-        p.start()
-        self.addCleanup(p.stop)
-        self.pushed = []
-        pp = mock.patch.object(
-            w, "push", lambda title, body: self.pushed.append((title, body)) or True
-        )
-        pp.start()
-        self.addCleanup(pp.stop)
-        self.out = StringIO()
-        self.addCleanup(self.out.close)
-
-    def run_main(self, items, argv=None):
-        with mock.patch.object(w, "collect", return_value=(items, 0, 9)), \
-                mock.patch.object(w.mihoyo_codes, "collect_codes", return_value=([], 0, 0)), \
-                redirect_stdout(self.out):
-            return w.main(argv or ["--digest-backup"])
-
-    def test_backup_skips_when_digest_already_done_today(self):
-        # 今天已出过日报 → 补抓轮直接跳过，不抓取、不推送
-        seen = {"posts": {}, "codes": {}}
-        w.mark_digest(seen, w.time.strftime("%Y-%m-%d"))
-        w.save_seen(seen)
-        code = self.run_main([item("1001")])
-        self.assertEqual(code, 0)
-        self.assertEqual(self.pushed, [])
-        self.assertIn("已出过完整日报", self.out.getvalue())
-
-    def _seed_state(self):
-        # 建立“非首次”状态：已有 posts 但今天没标记过日报
-        w.save_seen({"posts": {"seed": "2020-01-01"}, "codes": {}})
-
-    def test_backup_runs_when_no_digest_today(self):
-        # 今天还没出日报 → 补抓轮抓资讯并推送，同时记录 last_digest_date
-        self._seed_state()
-        code = self.run_main([item("1001"), item("2001", title="签到活动开启")])
-        self.assertEqual(code, 0)
-        self.assertEqual(len(self.pushed), 1)
-        self.assertIn("签到活动开启", self.pushed[0][1])
-        seen, _ = w.load_seen()
-        self.assertTrue(w.digest_done(seen, w.time.strftime("%Y-%m-%d")))
-
-    def test_regular_digest_marks_date(self):
-        # 普通日报轮（非补抓、非 codes-only）成功推送后也记录日期
-        self._seed_state()
-        with mock.patch.object(w, "collect", return_value=([item("1001")], 0, 9)), \
-                mock.patch.object(w.mihoyo_codes, "collect_codes", return_value=([], 0, 0)), \
-                redirect_stdout(self.out):
-            code = w.main([])
-        self.assertEqual(code, 0)
-        seen, _ = w.load_seen()
-        self.assertTrue(w.digest_done(seen, w.time.strftime("%Y-%m-%d")))
+class SlotWindowTests(unittest.TestCase):
+    def test_boundaries(self):
+        cases = {
+            0: ("morning", "早报"), 11: ("morning", "早报"),
+            12: ("noon", "午报"), 17: ("noon", "午报"),
+            18: ("evening", "晚报"), 23: ("evening", "晚报"),
+        }
+        for hour, expected in cases.items():
+            with self.subTest(hour=hour):
+                self.assertEqual(w.current_slot(hour), expected)
 
 
 if __name__ == "__main__":

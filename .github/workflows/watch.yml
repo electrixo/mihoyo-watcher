@@ -2,25 +2,21 @@ name: 米游社福利与签到
 
 # 时区说明：GitHub cron 一律用 UTC；文件里所有注释标的是北京时间。
 #
-# 2026-11-26 改版：以「到达时刻」为准，用实测偏移反推触发时刻。
-# 实测 28 个样本：GitHub 在触发后延迟 4h07~11h46 才创建运行（创建→开跑是 0 延迟），
-# 平均约 7h40，方差 4 小时以上，不可控。所以不再追求准点，而是先定「想几点收到」，
-# 再用最小延迟反推触发，保证落在目标之后：
-#   抓码     目标上午    → 02:45 BJT 触发（UTC 18:45 前一天）→ 到达 07:36–12:05
-#   日报     目标 12 点后 → 08:10 BJT 触发（UTC 00:10）       → 到达 12:17–16:44
-#   签到兜底 目标当天内   → 11:05 BJT 触发（UTC 03:05）       → 到达 19:22–22:51
-#   前瞻     目标凌晨     → 周三/五/六 22:07、22:37 触发      → 到达次日 04:27–07:16
+# 2026-11-27 改版：放弃「反推触发时刻」，改用「密集打点 + 分槽去重」。
+# 实测支撑（详见 docs/slots-dispatch.md）：
+#   * 28 个样本：偏移 4h07~11h46，无法用固定提前量对齐；
+#   * 24 小时内约 19 个定时触发只兑现 1 次（派发率约 2%），拆分/单点写法都可能整轮被吞；
+#   * 探针（单 cron/单 job/无状态提交）同样几乎不被派发——瓶颈在调度器派发，不在 workflow 结构；
+#   * 派发发生时是准的（探针 +28m），所以不赌时刻，用密度换覆盖。
 #
-# 2026-11-24 对照：原 `7,37 14 * * 3,5,6` 连续三次第二触发被吞，拆成两条独立 cron 后
-# 2026-11-25 首次两条都派发成功；是否稳定待周五/周六复核。
+# 现在的做法：每 30 分钟一个触发点（一天 48 点），被丢弃的点不产生请求；
+# 实际兑现约 4~5 次/天，每次跑完整流程，由脚本按北京时间分槽去重：
+#   早报 00:00-11:59 / 午报 12:00-17:59 / 晚报 18:00-23:59，每槽每天最多一条日报。
+# 新兑换码不受槽限制，随时推；签到幂等，每轮照跑（未启用则跳过）。
 
 on:
   schedule:
-    - cron: "45 18 * * *"         # BJT 02:45 → 到达 07:36–12:05，只抓兑换码
-    - cron: "10 0 * * *"          # BJT 08:10 → 到达 12:17–16:44，完整日报 + 签到
-    - cron: "5 3 * * *"           # BJT 11:05 → 到达 19:22–22:51，签到兜底
-    - cron: "7 14 * * 3,5,6"      # BJT 周三/五/六 22:07 → 到达次日 04:27–07:16，只抓码（拆分 A）
-    - cron: "37 14 * * 3,5,6"     # BJT 周三/五/六 22:37 → 同上，只抓码（拆分 B）
+    - cron: "7,37 * * * *"        # 每 30 分钟一个点（UTC；BJT +8）
   workflow_dispatch:
     inputs:
       dry_run:
@@ -40,17 +36,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TZ: Asia/Shanghai               # 让脚本里的「今天」按北京时间
+  TZ: Asia/Shanghai               # 让脚本里的「今天」和槽位按北京时间
 
 jobs:
   watch:
     if: |
       github.event_name == 'workflow_dispatch' ||
-      github.event.schedule == '45 18 * * *' ||
-      github.event.schedule == '10 0 * * *' ||
-      github.event.schedule == '5 3 * * *' ||
-      github.event.schedule == '7 14 * * 3,5,6' ||
-      github.event.schedule == '37 14 * * 3,5,6'
+      github.event.schedule == '7,37 * * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -71,7 +63,7 @@ jobs:
 
       # 排查用：确认这次运行由哪条 cron 触发（workflow_dispatch 时 schedule 为空）
       - name: 记录触发来源
-        run: echo "触发 event=${{ github.event_name }} schedule=${{ github.event.schedule }}" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: echo "触发 event=${{ github.event_name }} schedule=${{ github.event.schedule }} / 北京时间 $(TZ=Asia/Shanghai date '+%F %H:%M')" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: 抓取并推送
         env:
@@ -79,18 +71,12 @@ jobs:
         # pipefail：tee 不能吞掉脚本的退出码
         run: |
           set -o pipefail
-          CRON="${{ github.event.schedule }}"
           DRY=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
           TEST=""
           if [ "${{ inputs.test_push }}" = "true" ]; then TEST="--test-push"; fi
           if [ -n "$TEST" ]; then
             python src/watch_mihoyo.py --test-push 2>&1 | tee watch.log
-          elif [ "$CRON" = "45 18 * * *" ] || [ "$CRON" = "7 14 * * 3,5,6" ] || [ "$CRON" = "37 14 * * 3,5,6" ]; then
-            python src/watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
-          elif [ "$CRON" = "5 3 * * *" ]; then
-            # 签到兜底轮顺带补抓日报：当天 08:10 日报轮若被 GitHub 丢弃，这里补一次；已出则脚本内自动跳过
-            python src/watch_mihoyo.py --digest-backup $DRY 2>&1 | tee watch.log
           else
             python src/watch_mihoyo.py $DRY 2>&1 | tee watch.log
           fi
@@ -124,15 +110,11 @@ jobs:
     # 签到必须显式开启：仓库 Variables 里设置 CHECKIN_ENABLED=true 才会跑。
     # 未开启时整个 job 跳过（不消耗时间、不签到、不发任何签到告警）。
     # 开启后若没配 CHECKIN_COOKIE，脚本会 exit 0 跳过，同样不会告警。
-    # 福利 job 被跳过或失败时，签到仍照常跑。
+    # 密打后每轮兑现都跑一次；签到幂等（已签返回 -5003 算成功），重复执行无副作用。
     if: |
       always() &&
       vars.CHECKIN_ENABLED == 'true' &&
-      !(github.event_name == 'workflow_dispatch' && inputs.test_push) && (
-        github.event_name == 'workflow_dispatch' ||
-        github.event.schedule == '10 0 * * *' ||
-        github.event.schedule == '5 3 * * *'
-      )
+      !(github.event_name == 'workflow_dispatch' && inputs.test_push)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

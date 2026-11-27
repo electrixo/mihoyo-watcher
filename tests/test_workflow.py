@@ -1,13 +1,9 @@
-"""workflow 契约测试：锁住 watch.yml 里被重复书写四次的 cron 字符串。
+"""workflow 契约测试：锁住 watch.yml 的关键结构。
 
-为什么需要它 —— 每条 cron 分别出现在：
-  1. on.schedule（声明调度）
-  2. watch   job 的 if（决定要不要跑福利日报）
-  3. checkin job 的 if（决定要不要跑签到）
-  4. 抓取步骤的 shell elif（决定要不要切到 --codes-only）
-
-四处中漏改任何一处，job 都会**静默跳过**：不报错、不推送，GitHub 界面上
-只显示该 job 被跳过。这类故障排查成本极高，因此在这里设护栏。
+2026-11-27 起改为「单条密打 cron + 分槽去重」：
+  - on.schedule 只有一条 `7,37 * * * *`（每 30 分钟一个点）；
+  - watch job 响应它；checkin job 每轮都跑（靠幂等，不再按 cron 过滤）；
+  - 推送时机的正确性由 src/watch_mihoyo.py 的槽位逻辑保证（见 test_watch_mihoyo.py）。
 
 零第三方依赖：不引入 PyYAML，全部用正则做结构断言。
 """
@@ -20,21 +16,10 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parent.parent / ".github" / "workflows" / "watch.yml"
 )
 
-# 设计意图：五条调度，职责拆分（2026-11-26 起按「到达时刻」反推）
-#   CODES_NIGHT    02:45 BJT 触发 → 到达 07:36–12:05，只抓码（不抓资讯、不签到）
-#   DIGEST         08:10 BJT 触发 → 到达 12:17–16:44，完整日报 + 签到
-#   CHECKIN_BACKUP 11:05 BJT 触发 → 到达 19:22–22:51，签到兜底
-#   FORWARD_LOOK_A 周三/五/六 22:07 → 到达次日 04:27–07:16，只抓码
-#   FORWARD_LOOK_B 周三/五/六 22:37 → 同上，只抓码
-# 原先是 `7,37 14 * * 3,5,6` 一条，2026-11-23 拆成两条独立 cron 做试验。
-# cron 是 UTC；实测 GitHub 会延迟数小时才创建运行，注释里是触发时刻。
-CODES_NIGHT = "45 18 * * *"
-DIGEST = "10 0 * * *"
-CHECKIN_BACKUP = "5 3 * * *"
-FORWARD_LOOK_A = "7 14 * * 3,5,6"
-FORWARD_LOOK_B = "37 14 * * 3,5,6"
-CODES_ONLY_CRONS = {CODES_NIGHT, FORWARD_LOOK_A, FORWARD_LOOK_B}
-EXPECTED_CRONS = {CODES_NIGHT, DIGEST, CHECKIN_BACKUP, FORWARD_LOOK_A, FORWARD_LOOK_B}
+# 唯一一条 cron：每 30 分钟一个触发点。GitHub 会丢弃大部分点，实际兑现 4~5 次/天。
+# 传播到多条点后，由脚本按北京时间分槽（早/午/晚）去重推送。
+DENSE_CRON = "7,37 * * * *"
+EXPECTED_CRONS = {DENSE_CRON}
 
 TEST_MODULES = (
     "tests.test_watch_mihoyo",
@@ -68,11 +53,10 @@ class WorkflowContractTests(unittest.TestCase):
 
     # ---- on.schedule ----------------------------------------------------
 
-    def test_schedule_declares_exactly_the_expected_crons(self):
+    def test_schedule_declares_exactly_one_dense_cron(self):
         crons = re.findall(r'^\s*-\s*cron:\s*"([^"]+)"', self.on, re.M)
-        self.assertEqual(len(crons), len(EXPECTED_CRONS),
-                         f"on.schedule 应有且仅有 {len(EXPECTED_CRONS)} 条 cron，实际 {crons}")
-        self.assertEqual(set(crons), EXPECTED_CRONS)
+        self.assertEqual(crons, [DENSE_CRON],
+                         f"on.schedule 应只有一条密打 cron，实际 {crons}")
 
     def test_schedule_comparisons_have_no_typos(self):
         literals = re.findall(r"github\.event\.schedule\s*==\s*'([^']+)'", self.text)
@@ -80,13 +64,8 @@ class WorkflowContractTests(unittest.TestCase):
         unknown = sorted(set(literals) - EXPECTED_CRONS)
         self.assertEqual(unknown, [], f"这些 cron 比对串与 on.schedule 对不上：{unknown}")
 
-    def test_every_cron_is_consumed_by_some_job(self):
-        for cron in sorted(EXPECTED_CRONS):
-            with self.subTest(cron=cron):
-                self.assertIn(
-                    cron, self.watch + self.checkin,
-                    f"cron `{cron}` 没有任何 job 会响应，等于白声明",
-                )
+    def test_watch_job_responds_to_the_dense_cron(self):
+        self.assertIn(DENSE_CRON, self.watch, "密打 cron 没有触发 watch job")
 
     # ---- job 分工 -------------------------------------------------------
 
@@ -96,42 +75,20 @@ class WorkflowContractTests(unittest.TestCase):
             "签到 job 必须在 CHECKIN_ENABLED=true 时才运行，避免未配置时天天告警",
         )
 
-    def test_checkin_backup_triggers_digest_backup(self):
-        # 11:05 兜底轮兼做日报补抓：watch job 用 --digest-backup 模式（内部按 last_digest_date 门控），
-        # 保证 08:10 日报轮被丢弃时当天仍有资讯；checkin job 照常签到。
-        self.assertIn(CHECKIN_BACKUP, self.watch)
-        self.assertIn(CHECKIN_BACKUP, self.checkin)
-        self.assertIn(
-            "--digest-backup", self.watch,
-            "兜底轮触发的 watch job 必须走 --digest-backup 补抓模式",
+    def test_checkin_runs_every_round_by_idempotency(self):
+        # 密打后签到每轮兑现都跑，已签会返回 -5003 算成功；不再按 cron 过滤
+        self.assertNotIn(
+            "github.event.schedule", self.checkin,
+            "签到 job 不应再按 cron 过滤——它靠幂等承受高频运行",
         )
+        self.assertIn("米游社签到", self.checkin)
 
-    def test_watch_job_handles_codes_digest_backup_and_forward_look(self):
-        for cron in (CODES_NIGHT, DIGEST, CHECKIN_BACKUP, FORWARD_LOOK_A, FORWARD_LOOK_B):
-            with self.subTest(cron=cron):
-                self.assertIn(cron, self.watch, f"`{cron}` 没有触发 watch job")
-
-    def test_checkin_runs_on_digest_and_backup_only(self):
-        # 02:45 只抓码；签到只在 08:10 日报与 11:05 兜底运行
-        self.assertIn(DIGEST, self.checkin)
-        self.assertIn(CHECKIN_BACKUP, self.checkin)
-        self.assertNotIn(CODES_NIGHT, self.checkin)
-        self.assertNotIn(FORWARD_LOOK_A, self.checkin)
-        self.assertNotIn(FORWARD_LOOK_B, self.checkin)
-
-    def test_codes_only_branch_covers_night_and_forward_look(self):
-        self.assertIn("--codes-only", self.watch,
-                      "抓取步骤里找不到 --codes-only 分支")
-        start = self.watch.find("elif")
-        self.assertNotEqual(start, -1, "抓取步骤里找不到 elif 分支")
-        branch = self.watch[start:start + 500]
-        for cron in CODES_ONLY_CRONS:
-            with self.subTest(cron=cron):
-                self.assertIn(cron, branch, f"`{cron}` 没有切到 --codes-only")
-        self.assertIn("--codes-only", branch)
+    def test_codes_only_branch_removed(self):
+        # 不再有「某条 cron 只抓码」的分支，所有兑现都跑完整流程
+        self.assertNotIn("--codes-only", self.watch,
+                         "密打后不应再有 --codes-only 的调度分支")
 
     def test_schedule_is_logged_for_diagnosis(self):
-        # 拆分试验期间必须能看出每次运行由哪条 cron 触发
         self.assertIn("记录触发来源", self.watch)
         self.assertIn("schedule=${{ github.event.schedule }}", self.watch)
 

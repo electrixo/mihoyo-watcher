@@ -1,0 +1,178 @@
+name: 米游社福利与签到
+
+# 时区说明：GitHub cron 一律用 UTC；文件里所有注释标的是北京时间。
+#
+# 2026-11-26 改版：以「到达时刻」为准，用实测偏移反推触发时刻。
+# 实测 28 个样本：GitHub 在触发后延迟 4h07~11h46 才创建运行（创建→开跑是 0 延迟），
+# 平均约 7h40，方差 4 小时以上，不可控。所以不再追求准点，而是先定「想几点收到」，
+# 再用最小延迟反推触发，保证落在目标之后：
+#   抓码     目标上午    → 02:45 BJT 触发（UTC 18:45 前一天）→ 到达 07:36–12:05
+#   日报     目标 12 点后 → 08:10 BJT 触发（UTC 00:10）       → 到达 12:17–16:44
+#   签到兜底 目标当天内   → 11:05 BJT 触发（UTC 03:05）       → 到达 19:22–22:51
+#   前瞻     目标凌晨     → 周三/五/六 22:07、22:37 触发      → 到达次日 04:27–07:16
+#
+# 2026-11-24 对照：原 `7,37 14 * * 3,5,6` 连续三次第二触发被吞，拆成两条独立 cron 后
+# 2026-11-25 首次两条都派发成功；是否稳定待周五/周六复核。
+
+on:
+  schedule:
+    - cron: "45 18 * * *"         # BJT 02:45 → 到达 07:36–12:05，只抓兑换码
+    - cron: "10 0 * * *"          # BJT 08:10 → 到达 12:17–16:44，完整日报 + 签到
+    - cron: "5 3 * * *"           # BJT 11:05 → 到达 19:22–22:51，签到兜底
+    - cron: "7 14 * * 3,5,6"      # BJT 周三/五/六 22:07 → 到达次日 04:27–07:16，只抓码（拆分 A）
+    - cron: "37 14 * * 3,5,6"     # BJT 周三/五/六 22:37 → 同上，只抓码（拆分 B）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只抓取，不推送、不写状态（排查用）"
+        type: boolean
+        default: false
+      test_push:
+        description: "只发一条测试推送，不抓取、不写状态"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write                 # 提交 state/ 下的状态文件
+
+concurrency:
+  group: mihoyo-watch
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai               # 让脚本里的「今天」按北京时间
+
+jobs:
+  watch:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.schedule == '45 18 * * *' ||
+      github.event.schedule == '10 0 * * *' ||
+      github.event.schedule == '7 14 * * 3,5,6' ||
+      github.event.schedule == '37 14 * * 3,5,6'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 只跑新项目的测试；不要上传 tests/test_config.py / test_models.py
+      - name: 单元测试
+        run: python -m unittest tests.test_watch_mihoyo tests.test_mihoyo_codes tests.test_mihoyo_comments tests.test_workflow
+
+      - name: 随机延迟
+        if: github.event_name == 'schedule'
+        run: sleep $((RANDOM % 180))
+
+      # 排查用：确认这次运行由哪条 cron 触发（workflow_dispatch 时 schedule 为空）
+      - name: 记录触发来源
+        run: echo "触发 event=${{ github.event_name }} schedule=${{ github.event.schedule }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 抓取并推送
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        # pipefail：tee 不能吞掉脚本的退出码
+        run: |
+          set -o pipefail
+          CRON="${{ github.event.schedule }}"
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          TEST=""
+          if [ "${{ inputs.test_push }}" = "true" ]; then TEST="--test-push"; fi
+          if [ -n "$TEST" ]; then
+            python src/watch_mihoyo.py --test-push 2>&1 | tee watch.log
+          elif [ "$CRON" = "45 18 * * *" ] || [ "$CRON" = "7 14 * * 3,5,6" ] || [ "$CRON" = "37 14 * * 3,5,6" ]; then
+            python src/watch_mihoyo.py --codes-only $DRY 2>&1 | tee watch.log
+          else
+            python src/watch_mihoyo.py $DRY 2>&1 | tee watch.log
+          fi
+
+      - name: 提交状态
+        if: always()
+        run: |
+          git config user.name  "codewatch-bot"
+          git config user.email "codewatch-bot@users.noreply.github.com"
+          git add -A -- state/seen_news.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "chore: 更新福利监测状态 [skip ci]"
+            git push
+          fi
+
+      - name: 写入运行摘要
+        if: always()
+        run: |
+          {
+            echo "## 福利监测"
+            echo '```'
+            tail -n 60 watch.log 2>/dev/null || echo "无日志"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  checkin:
+    # 串行：两个 job 都会 commit/push，避免 non-fast-forward
+    needs: watch
+    # 签到必须显式开启：仓库 Variables 里设置 CHECKIN_ENABLED=true 才会跑。
+    # 未开启时整个 job 跳过（不消耗时间、不签到、不发任何签到告警）。
+    # 开启后若没配 CHECKIN_COOKIE，脚本会 exit 0 跳过，同样不会告警。
+    # 福利 job 被跳过或失败时，签到仍照常跑。
+    if: |
+      always() &&
+      vars.CHECKIN_ENABLED == 'true' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.test_push) && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.schedule == '10 0 * * *' ||
+        github.event.schedule == '5 3 * * *'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 随机延迟
+        if: github.event_name == 'schedule'
+        run: sleep $((RANDOM % 180))
+
+      - name: 米游社签到
+        env:
+          CHECKIN_COOKIE: ${{ secrets.CHECKIN_COOKIE }}
+          CHECKIN_DEVICE_ID: ${{ secrets.CHECKIN_DEVICE_ID }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          set -o pipefail
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          python src/checkin.py $DRY 2>&1 | tee checkin.log
+
+      - name: 提交状态
+        if: always()
+        run: |
+          git config user.name  "codewatch-bot"
+          git config user.email "codewatch-bot@users.noreply.github.com"
+          git add -A -- state/checkin_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过提交"
+          else
+            git commit -m "chore: 更新签到状态 [skip ci]"
+            git push
+          fi
+
+      - name: 写入运行摘要
+        if: always()
+        run: |
+          {
+            echo "## 签到"
+            echo '```'
+            tail -n 60 checkin.log 2>/dev/null || echo "无日志"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
