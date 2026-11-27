@@ -47,35 +47,6 @@ GitHub Actions 定时触发
 - 失败告警按 1 / 3 / 7 天阶梯发送，避免每天轰炸
 - **默认不运行**：仓库 Variables 里设置 `CHECKIN_ENABLED=true` 才会执行
 
-## 快速开始
-
-仓库 Settings → Secrets and variables → Actions → **Secrets**：
-
-| Name | 必填 | 说明 |
-|---|---|---|
-| `PUSHPLUS_TOKEN` | 推荐 | pushplus 的 token；不填时只打印日志，不推送 |
-| `CHECKIN_COOKIE` | 签到必填 | 米游社 Cookie，需包含 `cookie_token` / `ltuid` 等登录字段 |
-| `CHECKIN_DEVICE_ID` | 可选 | 固定设备标识；不填时按 Cookie 稳定派生 |
-
-也支持 `CHECKIN_COOKIE_B64`：Cookie 串或 `{"cookies": {...}, "device": "..."}` 的 base64。
-
-Cookie 获取：浏览器登录米游社 → 开发者工具 → 任意请求的 Cookie 头，复制完整值。它等价于登录凭证，只放 Secrets。
-
-### 3. 配置 Variables（签到开关）
-
-同一页面 → **Variables** → New repository variable：
-
-| Name | Value |
-|---|---|
-| `CHECKIN_ENABLED` | `true` |
-
-不设置时，签到 job 会直接跳过：不执行、不消耗时间、不发任何签到告警。
-
-### 4. 定时任务
-
-GitHub 的定时派发不可控：实测延迟 4~11 小时，且一天只兑现少数几次（约 2% 的触发点）。
-所以 cron 改成**每 30 分钟一个点**（被丢弃的点不产生任何请求），实际兑现约 4~5 次/天；
-每次兑现跑完整流程，由脚本按北京时间**分槽去重**：
 
 | 槽 | 到达窗口（北京时间） | 推送 |
 |---|---|---|
@@ -83,28 +54,7 @@ GitHub 的定时派发不可控：实测延迟 4~11 小时，且一天只兑现�
 | 午报 | 12:00–17:59 | 覆盖当天 12:00 发布（约 53%） |
 | 晚报 | 18:00–23:59 | 覆盖当天 18:00 发布（约 24%） |
 
-单一 cron：`7,37 * * * *`（UTC）。每槽每天最多一条日报；新兑换码不受槽限制，随时推；
-签到幂等，每轮照跑（未启用则跳过）。详细证据与设计见 `docs/slots-dispatch.md`。
-
 也可以手动 Run workflow，勾选 `dry_run`（只抓取不推送/不写状态）或 `test_push`（只发一条测试消息）。
-
-## 目录结构
-
-```
-docs/
-  HANDOFF.md          交接/设计说明
-src/
-  watch_mihoyo.py     入口：资讯 + 兑换码日报
-  mihoyo_codes.py     搜索采集 + 兑换码识别（含中文码）
-  mihoyo_comments.py  评论区取码（默认关闭）
-  mihoyo_http.py      HTTP 公共层：gzip / 超时 / 重试
-  checkin.py          米游社签到（DS2、失败分类、告警）
-tests/                离线单元测试 + fixture
-state/
-  seen_news.json      运行后生成：已见内容与兑换码
-  checkin_state.json  运行后生成：签到状态与告警阶梯
-.github/workflows/watch.yml
-```
 
 常见问题：
 
