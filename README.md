@@ -61,7 +61,17 @@ GitHub Actions 定时触发
 
 Cookie 获取：浏览器登录米游社 → 开发者工具 → 任意请求的 Cookie 头，复制完整值。它等价于登录凭证，只放 Secrets。
 
-### 定时任务
+### 3. 配置 Variables（签到开关）
+
+同一页面 → **Variables** → New repository variable：
+
+| Name | Value |
+|---|---|
+| `CHECKIN_ENABLED` | `true` |
+
+不设置时，签到 job 会直接跳过：不执行、不消耗时间、不发任何签到告警。
+
+### 4. 定时任务
 
 GitHub 的定时派发不可控：实测延迟 4~11 小时，且一天只兑现少数几次（约 2% 的触发点）。
 所以 cron 改成**每 30 分钟一个点**（被丢弃的点不产生任何请求），实际兑现约 4~5 次/天；
@@ -77,6 +87,24 @@ GitHub 的定时派发不可控：实测延迟 4~11 小时，且一天只兑现�
 签到幂等，每轮照跑（未启用则跳过）。详细证据与设计见 `docs/slots-dispatch.md`。
 
 也可以手动 Run workflow，勾选 `dry_run`（只抓取不推送/不写状态）或 `test_push`（只发一条测试消息）。
+
+## 目录结构
+
+```
+docs/
+  HANDOFF.md          交接/设计说明
+src/
+  watch_mihoyo.py     入口：资讯 + 兑换码日报
+  mihoyo_codes.py     搜索采集 + 兑换码识别（含中文码）
+  mihoyo_comments.py  评论区取码（默认关闭）
+  mihoyo_http.py      HTTP 公共层：gzip / 超时 / 重试
+  checkin.py          米游社签到（DS2、失败分类、告警）
+tests/                离线单元测试 + fixture
+state/
+  seen_news.json      运行后生成：已见内容与兑换码
+  checkin_state.json  运行后生成：签到状态与告警阶梯
+.github/workflows/watch.yml
+```
 
 ## 日志与排障
 
@@ -128,6 +156,11 @@ GitHub 的定时派发不可控：实测延迟 4~11 小时，且一天只兑现�
 - `PUSHPLUS_TOKEN`、`CHECKIN_COOKIE` 只保存在原仓库的 Secrets 中，fork 不会复制
 - 本项目只使用 `schedule` 和 `workflow_dispatch`，不使用 `pull_request_target` / `workflow_run`
 - 签到默认关闭，未设置 `CHECKIN_ENABLED=true` 时不会执行
+
+### 公开仓库意味着什么
+
+- Actions 日志和 Job Summary 是公开的；代码已对 Cookie 打码，仍请不要把凭证写进任何文件
+- 状态文件只包含日期、post_id、兑换码和计数，不包含凭证
 
 ### 如果你是 fork 的使用者
 
